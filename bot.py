@@ -1,28 +1,26 @@
-import asyncio
 import os
+import asyncio
 import re
-
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from dotenv import load_dotenv
 from openai import OpenAI
-from fastapi import FastAPI
-import uvicorn
+from dotenv import load_dotenv
 
 # --- Настройка ---
 load_dotenv()
 TG_TOKEN = os.getenv("TG_TOKEN")
-HF_TOKEN = os.getenv("HF_TOKEN")  # Hugging Face токен
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # твой публичный URL + /webhook
+HF_TOKEN = os.getenv("HF_TOKEN")
 
-if not TG_TOKEN:
-    raise RuntimeError("TG_TOKEN не найден в .env")
-if not HF_TOKEN:
-    raise RuntimeError("HF_TOKEN не найден в .env")
+if not TG_TOKEN or not WEBHOOK_URL or not HF_TOKEN:
+    raise RuntimeError("TG_TOKEN, WEBHOOK_URL или HF_TOKEN не найдены в .env")
 
-bot = Bot(TG_TOKEN)
+bot = Bot(TG_TOKEN, parse_mode="HTML")
 dp = Dispatcher()
 
-# LM / Hugging Face клиент
+# Hugging Face client
 client = OpenAI(
     base_url="https://router.huggingface.co/v1",
     api_key=HF_TOKEN,
@@ -60,9 +58,9 @@ async def generate_reply(chat_id: int, user_msg: str) -> str:
         messages=messages
     )
 
-    # Убираем теги <think>
+    # Обработка тегов <think> от deepsick
     assistant_reply = response.choices[0].message.content
-    assistant_reply = re.sub(r"<.*?>", "", assistant_reply, flags=re.DOTALL).strip()
+    assistant_reply = re.sub(r"<think>.*?</think>", "", assistant_reply, flags=re.DOTALL).strip()
 
     update_history(chat_id, "assistant", assistant_reply)
     return assistant_reply
@@ -89,68 +87,49 @@ async def handle_message(msg: types.Message):
     chat_id = msg.chat.id
     text = msg.text or ""
 
-    # --- Групповые чаты: реагируем на имя бота ---
+    # Проверка упоминания имени бота
+    me = await bot.get_me()
+    bot_names = ["Стасян", "Стасяна", "Стасяну", "Стасяне", "Стасяном", "Стасяне"]
+    mentioned = False
+
     if msg.chat.type != "private":
-        me = await bot.get_me()
-        bot_names = ["Стасян", "Стасяна", "Стасяну", "Стасяне", "Стасяном", "Стасяне"]
-        mentioned = False
-
-        # Проверка упоминания @username
-        if msg.entities:
-            for ent in msg.entities:
-                if ent.type == "mention":
-                    mention_text = text[ent.offset: ent.offset + ent.length]
-                    if mention_text.lower() == f"@{me.username.lower()}":
-                        mentioned = True
-                        text = text.replace(mention_text, "").strip()
-                        break
-
-        # Проверка имени бота как слова
-        if not mentioned:
-            words = re.sub(r"[^\w\s]", "", text.lower()).split()
+        clean_text = re.sub(r"[^\w\s]", "", text.lower())
+        words = clean_text.split()
+        if f"@{me.username.lower()}" in text.lower():
+            mentioned = True
+            text = text.replace(f"@{me.username}", "").strip()
+        else:
             for name in bot_names:
                 if name.lower() in words:
                     mentioned = True
                     text = re.sub(name, "", text, flags=re.IGNORECASE).strip()
                     break
 
-        if not mentioned:
-            return  # игнорируем сообщение, если бот не упомянут
+    if msg.chat.type != "private" and not mentioned:
+        return  # игнорируем сообщения без упоминания
 
-    # Сохраняем историю
     update_history(chat_id, "user", text)
-
-    # Имитация typing
-    await bot.send_chat_action(chat_id, "typing")
-    await asyncio.sleep(1)
-
-    # Генерация ответа
+    await msg.answer("⌛ Думаю...")  # имитация typing
     reply = await generate_reply(chat_id, text)
-    await asyncio.sleep(0.2)
     await msg.answer(reply)
 
-# --- FastAPI keep-alive сервер ---
+# --- FastAPI Webhook ---
 app = FastAPI()
 
-@app.get("/")
-async def root():
-    return {"status": "ok"}
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    data = await request.json()
+    update = types.Update(**data)
+    await dp.feed_update(bot, update)
+    return JSONResponse(content={"ok": True})
+
+# --- Установка webhook ---
+async def set_webhook():
+    await bot.delete_webhook()
+    await bot.set_webhook(WEBHOOK_URL)
 
 # --- Запуск ---
-async def main():
-    print("Бот запущен...")
-    await dp.start_polling(bot)
-
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    loop = asyncio.get_event_loop()
-
-    # Запускаем FastAPI + Telegram polling вместе
-    import threading
-    def run_api():
-        uvicorn.run(app, host="0.0.0.0", port=port)
-
-    t = threading.Thread(target=run_api, daemon=True)
-    t.start()
-
-    asyncio.run(main())
+    import uvicorn
+    asyncio.run(set_webhook())
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
