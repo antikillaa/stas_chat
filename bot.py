@@ -1,16 +1,18 @@
 import asyncio
 import os
 import re
-from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from dotenv import load_dotenv
 from openai import OpenAI
+from fastapi import FastAPI
+import uvicorn
 
 # --- Настройка ---
 load_dotenv()
 TG_TOKEN = os.getenv("TG_TOKEN")
-HF_TOKEN = os.getenv("HF_TOKEN")
+HF_TOKEN = os.getenv("HF_TOKEN")  # Hugging Face токен
 
 if not TG_TOKEN:
     raise RuntimeError("TG_TOKEN не найден в .env")
@@ -20,30 +22,25 @@ if not HF_TOKEN:
 bot = Bot(TG_TOKEN)
 dp = Dispatcher()
 
-# Hugging Face Inference API
+# LM / Hugging Face клиент
 client = OpenAI(
     base_url="https://router.huggingface.co/v1",
     api_key=HF_TOKEN,
 )
 
-# Загружаем persona (твой стиль)
+# Загружаем persona
 with open("persona.txt", "r", encoding="utf-8") as f:
     persona = f.read()
 
-# Память чата: {chat_id: {"history": [], "mode": "stylish"}}
+# Память чата
 chat_memory = {}
 MAX_HISTORY = 20
 
-# --- Функции ---
 def update_history(chat_id: int, role: str, text: str):
     if chat_id not in chat_memory:
         chat_memory[chat_id] = {"history": [], "mode": "stylish"}
     chat_memory[chat_id]["history"].append({"role": role, "content": text})
     chat_memory[chat_id]["history"] = chat_memory[chat_id]["history"][-MAX_HISTORY:]
-
-def clean_reply(text: str) -> str:
-    """Убираем все теги <think>...</think>"""
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 async def generate_reply(chat_id: int, user_msg: str) -> str:
     mode = chat_memory.get(chat_id, {}).get("mode", "stylish")
@@ -63,8 +60,10 @@ async def generate_reply(chat_id: int, user_msg: str) -> str:
         messages=messages
     )
 
+    # Убираем теги <think>
     assistant_reply = response.choices[0].message.content
-    assistant_reply = clean_reply(assistant_reply)  # убираем <think>
+    assistant_reply = re.sub(r"<.*?>", "", assistant_reply, flags=re.DOTALL).strip()
+
     update_history(chat_id, "assistant", assistant_reply)
     return assistant_reply
 
@@ -90,13 +89,13 @@ async def handle_message(msg: types.Message):
     chat_id = msg.chat.id
     text = msg.text or ""
 
-    # В группах реагируем только на упоминание имени или @username
-    mentioned = False
+    # --- Групповые чаты: реагируем на имя бота ---
     if msg.chat.type != "private":
         me = await bot.get_me()
         bot_names = ["Стасян", "Стасяна", "Стасяну", "Стасяне", "Стасяном", "Стасяне"]
+        mentioned = False
 
-        # Проверка @username
+        # Проверка упоминания @username
         if msg.entities:
             for ent in msg.entities:
                 if ent.type == "mention":
@@ -106,19 +105,19 @@ async def handle_message(msg: types.Message):
                         text = text.replace(mention_text, "").strip()
                         break
 
-        # Проверка имени бота
+        # Проверка имени бота как слова
         if not mentioned:
-            clean_text = re.sub(r"[^\w\s]", "", text.lower())
-            words = clean_text.split()
+            words = re.sub(r"[^\w\s]", "", text.lower()).split()
             for name in bot_names:
                 if name.lower() in words:
                     mentioned = True
                     text = re.sub(name, "", text, flags=re.IGNORECASE).strip()
                     break
 
-    if msg.chat.type != "private" and not mentioned:
-        return  # игнорируем, если не упомянули
+        if not mentioned:
+            return  # игнорируем сообщение, если бот не упомянут
 
+    # Сохраняем историю
     update_history(chat_id, "user", text)
 
     # Имитация typing
@@ -128,14 +127,30 @@ async def handle_message(msg: types.Message):
     # Генерация ответа
     reply = await generate_reply(chat_id, text)
     await asyncio.sleep(0.2)
-
     await msg.answer(reply)
+
+# --- FastAPI keep-alive сервер ---
+app = FastAPI()
+
+@app.get("/")
+async def root():
+    return {"status": "ok"}
 
 # --- Запуск ---
 async def main():
     print("Бот запущен...")
-    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    loop = asyncio.get_event_loop()
+
+    # Запускаем FastAPI + Telegram polling вместе
+    import threading
+    def run_api():
+        uvicorn.run(app, host="0.0.0.0", port=port)
+
+    t = threading.Thread(target=run_api, daemon=True)
+    t.start()
+
     asyncio.run(main())
