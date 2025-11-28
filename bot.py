@@ -40,6 +40,12 @@ def update_history(chat_id: int, role: str, text: str):
     chat_memory[chat_id]["history"].append({"role": role, "content": text})
     chat_memory[chat_id]["history"] = chat_memory[chat_id]["history"][-MAX_HISTORY:]
 
+# --- Очистка тегов ---
+def clean_response(text: str) -> str:
+    # Убираем <think>...</think> и <act>...</act>
+    text = re.sub(r"<(think|act)>.*?</\1>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    return text.strip()
+
 # --- Генерация ответа ---
 async def generate_reply(chat_id: int, user_msg: str) -> str:
     mode = chat_memory.get(chat_id, {}).get("mode", "stylish")
@@ -60,6 +66,7 @@ async def generate_reply(chat_id: int, user_msg: str) -> str:
     )
 
     assistant_reply = response.choices[0].message.content
+    assistant_reply = clean_response(assistant_reply)  # <-- очищаем от тегов
     update_history(chat_id, "assistant", assistant_reply)
     return assistant_reply
 
