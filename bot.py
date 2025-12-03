@@ -101,12 +101,21 @@ KEYWORD_CHANCE = 0.9  # 90%, если есть ключевые слова
 @dp.message(F.text)
 async def smart_praise(message: types.Message):
     me = await bot.get_me()
-    if message.from_user.id == me.id:
-        return  # игнорируем свои сообщения
-
     text = message.text.lower()
 
-    # Проверка ключевых слов
+    # Если сообщение направлено боту — не трогаем, пусть основной хендлер его обработает
+    if f"@{me.username.lower()}" in text:
+        return
+
+    for name in bot_names:
+        if name.lower() in text:
+            return
+
+    # Не реагируем на свои же сообщения
+    if message.from_user.id == me.id:
+        return
+
+    # Похвалы
     has_keyword = any(word in text for word in POSITIVE_KEYWORDS)
     chance = KEYWORD_CHANCE if has_keyword else BASE_CHANCE
 
