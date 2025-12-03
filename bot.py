@@ -97,19 +97,32 @@ POSITIVE_KEYWORDS = [
 # Вероятность реакции (0.0–1.0)
 BASE_CHANCE = 0.5  # 50% на каждое медиа
 
-@dp.message()
-async def praise_on_media(msg: types.Message):
+@dp.message(F.text)
+async def smart_praise(message: types.Message):
     me = await bot.get_me()
-    if msg.from_user.id == me.id:
-        return  # игнорируем свои сообщения
+    text = message.text.lower()
 
-    # Проверяем, есть ли фото или видео
-    if msg.photo or msg.video or msg.animation:
-        if random.random() < BASE_CHANCE:
-            praise = random.choice(PRAISES)
-            await bot.send_chat_action(msg.chat.id, "typing")
-            await asyncio.sleep(random.uniform(0.5, 1.5))
-            await msg.answer(praise)
+    # Если сообщение направлено боту — не трогаем, пусть основной хендлер его обработает
+    if f"@{me.username.lower()}" in text:
+        return
+
+    for name in bot_names:
+        if name.lower() in text:
+            return
+
+    # Не реагируем на свои же сообщения
+    if message.from_user.id == me.id:
+        return
+
+    # Похвалы
+    has_keyword = any(word in text for word in POSITIVE_KEYWORDS)
+    chance = KEYWORD_CHANCE if has_keyword else BASE_CHANCE
+
+    if random.random() < chance:
+        praise = random.choice(PRAISES)
+        await bot.send_chat_action(message.chat.id, "typing")
+        await asyncio.sleep(random.uniform(0.5, 1.5))
+        await message.answer(praise)
 
 @dp.message(Command("reset"))
 async def reset_chat(msg: types.Message):
@@ -203,6 +216,7 @@ app.router.add_get("/health", health)
 
 
 async def on_startup(app):
+    await bot.delete_webhook()
     if not PUBLIC_URL:
         raise RuntimeError("PUBLIC_URL не указан в настройках Render!")
 
