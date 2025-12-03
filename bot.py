@@ -9,8 +9,6 @@ from aiogram.filters import Command
 from aiohttp import web
 from openai import OpenAI
 
-from keep_alive import keep_alive
-
 # ------------------------------
 # ENV
 # ------------------------------
@@ -113,18 +111,16 @@ KEYWORD_CHANCE = 0.9
 async def auto_praise(msg: types.Message):
     me = await bot.get_me()
 
-    # ignore bot messages
     if msg.from_user.id == me.id:
         return
 
-    text = msg.text.lower()
-
-    has_keyword = any(w in text for w in POSITIVE_WORDS)
-    chance = KEYWORD_CHANCE if has_keyword else BASE_CHANCE
-
-    # only in groups
+    # only groups
     if msg.chat.type == "private":
         return
+
+    text = msg.text.lower()
+    has_keyword = any(w in text for w in POSITIVE_WORDS)
+    chance = KEYWORD_CHANCE if has_keyword else BASE_CHANCE
 
     if random.random() < chance:
         await asyncio.sleep(0.5)
@@ -132,7 +128,7 @@ async def auto_praise(msg: types.Message):
 
 
 # ------------------------------
-# Handle text messages (bot mentions)
+# TEXT HANDLER
 # ------------------------------
 bot_names = ["Стасян", "Стасяне", "Стасяну", "Стасяном"]
 
@@ -142,11 +138,11 @@ async def handle_text(msg: types.Message):
     text = msg.text or ""
     mentioned = False
 
-    # private chat — always answer
+    # private = always answer
     if msg.chat.type == "private":
         mentioned = True
 
-    # @username mention
+    # mention @username
     elif msg.entities:
         for ent in msg.entities:
             if ent.type == "mention":
@@ -158,9 +154,8 @@ async def handle_text(msg: types.Message):
     # name mention
     if not mentioned:
         clean = re.sub(r"[^\w\s]", "", text.lower())
-        for name in bot_names:
-            if name.lower() in clean.split():
-                mentioned = True
+        if any(name.lower() in clean.split() for name in bot_names):
+            mentioned = True
 
     # reply to bot
     if not mentioned and msg.reply_to_message:
@@ -180,7 +175,7 @@ async def handle_text(msg: types.Message):
 
 
 # ------------------------------
-# PHOTO HANDLER
+# PHOTO
 # ------------------------------
 @dp.message(F.photo)
 async def handle_photo(msg: types.Message):
@@ -270,12 +265,30 @@ async def mode(msg: types.Message):
 
 
 # ------------------------------
-# Webhook application
+# KEEP ALIVE TASK
+# ------------------------------
+async def keep_alive():
+    """Ping self to prevent Render from sleeping."""
+    url = os.getenv("PUBLIC_URL")
+    if not url:
+        return
+
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                await session.get(url + "/health")
+            except:
+                pass
+            await asyncio.sleep(60)
+
+
+# ------------------------------
+# WEBHOOK SERVER
 # ------------------------------
 app = web.Application()
 
 
-async def webhook(request):
+async def webhook_handler(request):
     data = await request.json()
     update = types.Update.model_validate(data)
     await dp.feed_update(bot, update)
@@ -286,20 +299,28 @@ async def health(request):
     return web.Response(text="OK")
 
 
-app.router.add_post(f"/webhook/{TG_TOKEN}", webhook)
+app.router.add_post(f"/webhook/{TG_TOKEN}", webhook_handler)
 app.router.add_get("/", health)
 app.router.add_get("/health", health)
 
 
+# ------------------------------
+# STARTUP
+# ------------------------------
 async def on_startup(app):
-    asyncio.create_task(keep_alive())  # ping every minute
     url = f"{PUBLIC_URL}/webhook/{TG_TOKEN}"
-    await bot.set_webhook(url)
-    print("Webhook set:", url)
+    print("Setting webhook:", url)
+
+    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.set_webhook(url, allowed_updates=["message", "photo", "video"])
+
+    asyncio.create_task(keep_alive())
+    print("Webhook set successfully")
 
 
 async def on_shutdown(app):
     await bot.delete_webhook()
+    await bot.session.close()
 
 
 app.on_startup.append(on_startup)
