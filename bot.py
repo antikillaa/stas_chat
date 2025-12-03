@@ -6,186 +6,276 @@ from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from openai import OpenAI
 from aiohttp import web
+from openai import OpenAI
 
 from keep_alive import keep_alive
 
-# --- Настройка ---
+# ------------------------------
+# ENV
+# ------------------------------
 load_dotenv()
 TG_TOKEN = os.getenv("TG_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
+PUBLIC_URL = os.getenv("PUBLIC_URL")
 
 if not TG_TOKEN:
-    raise RuntimeError("TG_TOKEN не найден в .env")
+    raise RuntimeError("TG_TOKEN missing")
 if not HF_TOKEN:
-    raise RuntimeError("HF_TOKEN не найден в .env")
+    raise RuntimeError("HF_TOKEN missing")
+if not PUBLIC_URL:
+    raise RuntimeError("PUBLIC_URL missing")
 
 bot = Bot(TG_TOKEN)
 dp = Dispatcher()
 
-# Hugging Face Inference API
+# ------------------------------
+# HuggingFace
+# ------------------------------
 client = OpenAI(
     base_url="https://router.huggingface.co/v1",
     api_key=HF_TOKEN,
 )
 
-# --- Persona ---
+# ------------------------------
+# Persona
+# ------------------------------
 with open("persona.txt", "r", encoding="utf-8") as f:
     persona = f.read()
 
-# --- Память чата ---
+# ------------------------------
+# Memory
+# ------------------------------
 chat_memory = {}  # {chat_id: {"history": [], "mode": "stylish"}}
 MAX_HISTORY = 20
 
+
 def update_history(chat_id: int, role: str, text: str):
-    if chat_id not in chat_memory:
-        chat_memory[chat_id] = {"history": [], "mode": "stylish"}
+    chat_memory.setdefault(chat_id, {"history": [], "mode": "stylish"})
     chat_memory[chat_id]["history"].append({"role": role, "content": text})
     chat_memory[chat_id]["history"] = chat_memory[chat_id]["history"][-MAX_HISTORY:]
 
-# --- Генерация ответа ---
-async def generate_reply(chat_id: int, user_msg: str) -> str:
+
+# ------------------------------
+# LLM Generation
+# ------------------------------
+async def generate_reply(chat_id: int, text: str) -> str:
     mode = chat_memory.get(chat_id, {}).get("mode", "stylish")
-    system_prompt = f"Ты — это я. Общайся в моем стиле.\nМой стиль:\n{persona}\n"
+
+    system_prompt = (
+        f"Ты — это я. Общайся в моем стиле.\n"
+        f"Мой стиль:\n{persona}\n"
+    )
+
     if mode == "stylish":
         system_prompt += "Отвечай коротко, естественно и как я бы сказал."
-    elif mode == "detailed":
-        system_prompt += "Отвечай подробно, развернуто и объясняй все детали."
+    else:
+        system_prompt += "Отвечай развернуто и подробно."
 
     messages = [{"role": "system", "content": system_prompt}]
+
     if chat_id in chat_memory:
-        messages.extend(chat_memory[chat_id]["history"])
-    messages.append({"role": "user", "content": user_msg})
+        messages += chat_memory[chat_id]["history"]
+
+    messages.append({"role": "user", "content": text})
 
     response = client.chat.completions.create(
         model="deepseek-ai/DeepSeek-R1",
         messages=messages
     )
 
-    assistant_reply = response.choices[0].message.content
+    reply = response.choices[0].message.content
+    reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip()
 
-    # Убираем теги <think>
-    assistant_reply = re.sub(r"<think>.*?</think>", "", assistant_reply, flags=re.DOTALL).strip()
+    update_history(chat_id, "assistant", reply)
+    return reply
 
-    update_history(chat_id, "assistant", assistant_reply)
-    return assistant_reply
 
-# --- Имя бота ---
-bot_names = ["Стасян", "Стасяна", "Стасяну", "Стасяне", "Стасяном", "Стасяне"]
-
-# --- Обработчики ---
-
-# Список похвал в твоём стиле
+# ------------------------------
+# Praise auto-reactions
+# ------------------------------
 PRAISES = [
     "О, брат, молодец 👍",
-    "Так держать, красавчик 💪",
     "Красиво получилось 😎",
-    "Вот это уровень 👏",
-    "Брат, огонь 🔥",
     "Ты прям на стиле 😏",
-    "Ну ты загнул, круто 👌",
-    "Брат, зачёт 👊",
-    "Скиньте фото члена",
+    "Брат, огонь 🔥",
+    "Зачёт 👊",
 ]
 
-# Слова-ключи, при которых бот похвалит
-POSITIVE_KEYWORDS = [
-    "сделал", "успех", "готово", "класс", "пофиксил", "отлично", "супер", "заработало", "получилось"
+POSITIVE_WORDS = [
+    "сделал", "готово", "успех", "класс", "получилось", "супер", "отлично", "заработало"
 ]
 
-# Вероятность реакции (0.0–1.0)
-BASE_CHANCE = 0.5  # 50% на каждое медиа
+BASE_CHANCE = 0.2
+KEYWORD_CHANCE = 0.9
 
-@dp.message()
-async def praise_on_media(msg: types.Message):
+@dp.message(F.text)
+async def auto_praise(msg: types.Message):
     me = await bot.get_me()
+
+    # ignore bot messages
     if msg.from_user.id == me.id:
-        return  # игнорируем свои сообщения
-
-    # Проверяем, есть ли фото или видео
-    if msg.photo or msg.video or msg.animation:
-        if random.random() < BASE_CHANCE:
-            praise = random.choice(PRAISES)
-            await bot.send_chat_action(msg.chat.id, "typing")
-            await asyncio.sleep(random.uniform(0.5, 1.5))
-            await msg.answer(praise)
-
-@dp.message(Command("reset"))
-async def reset_chat(msg: types.Message):
-    chat_id = msg.chat.id
-    chat_memory[chat_id] = {"history": [], "mode": "stylish"}
-    await msg.answer("История чата очищена ✅, режим сброшен на 'stylish'.")
-
-@dp.message(Command("mode"))
-async def change_mode(msg: types.Message):
-    chat_id = msg.chat.id
-    parts = msg.text.split()
-    if len(parts) < 2 or parts[1] not in ["stylish", "detailed"]:
-        await msg.answer("Используй: /mode stylish или /mode detailed")
         return
-    chat_memory.setdefault(chat_id, {"history": [], "mode": "stylish"})["mode"] = parts[1]
-    await msg.answer(f"Режим ответа изменен на '{parts[1]}' ✅")
 
-@dp.message()
-async def handle_message(msg: types.Message):
-    chat_id = msg.chat.id
+    text = msg.text.lower()
+
+    has_keyword = any(w in text for w in POSITIVE_WORDS)
+    chance = KEYWORD_CHANCE if has_keyword else BASE_CHANCE
+
+    # only in groups
+    if msg.chat.type == "private":
+        return
+
+    if random.random() < chance:
+        await asyncio.sleep(0.5)
+        await msg.answer(random.choice(PRAISES))
+
+
+# ------------------------------
+# Handle text messages (bot mentions)
+# ------------------------------
+bot_names = ["Стасян", "Стасяне", "Стасяну", "Стасяном"]
+
+@dp.message(F.text)
+async def handle_text(msg: types.Message):
+    me = await bot.get_me()
     text = msg.text or ""
     mentioned = False
-    me = await bot.get_me()
 
-    # Личные чаты всегда упоминание
+    # private chat — always answer
     if msg.chat.type == "private":
         mentioned = True
-    else:
-        # 1️⃣ Проверка @username
-        if msg.entities:
-            for ent in msg.entities:
-                if ent.type == "mention":
-                    mention_text = text[ent.offset: ent.offset + ent.length]
-                    if mention_text.lower() == f"@{me.username.lower()}":
-                        mentioned = True
-                        text = text.replace(mention_text, "").strip()
-                        break
 
-        # 2️⃣ Проверка имени бота
-        if not mentioned:
-            clean_text = re.sub(r"[^\w\s]", "", text.lower())
-            words = clean_text.split()
-            for name in bot_names:
-                if name.lower() in words:
+    # @username mention
+    elif msg.entities:
+        for ent in msg.entities:
+            if ent.type == "mention":
+                mention = text[ent.offset:ent.offset+ent.length]
+                if mention.lower() == f"@{me.username.lower()}":
                     mentioned = True
-                    text = re.sub(name, "", text, flags=re.IGNORECASE).strip()
-                    break
+                    text = text.replace(mention, "").strip()
 
-        # 3️⃣ Проверка reply_to_message
-        if not mentioned and msg.reply_to_message:
-            if msg.reply_to_message.from_user.id == me.id:
+    # name mention
+    if not mentioned:
+        clean = re.sub(r"[^\w\s]", "", text.lower())
+        for name in bot_names:
+            if name.lower() in clean.split():
                 mentioned = True
 
+    # reply to bot
+    if not mentioned and msg.reply_to_message:
+        if msg.reply_to_message.from_user.id == me.id:
+            mentioned = True
+
     if not mentioned:
-        return  # игнорируем сообщение в группе, если не упомянуты и не reply
+        return
 
-    # --- Обновляем историю ---
-    update_history(chat_id, "user", text)
+    update_history(msg.chat.id, "user", text)
 
-    # --- Симуляция typing ---
-    await bot.send_chat_action(chat_id, "typing")
+    await bot.send_chat_action(msg.chat.id, "typing")
     await asyncio.sleep(1)
 
-    # --- Генерация ответа ---
-    reply = await generate_reply(chat_id, text)
-    await asyncio.sleep(0.2)
+    reply = await generate_reply(msg.chat.id, text)
     await msg.answer(reply)
 
 
-# --- Webhook ---
-WEBHOOK_PATH = f"/webhook/{TG_TOKEN}"
-PORT = int(os.environ.get("PORT", 8000))
-PUBLIC_URL = os.environ.get("PUBLIC_URL")
+# ------------------------------
+# PHOTO HANDLER
+# ------------------------------
+@dp.message(F.photo)
+async def handle_photo(msg: types.Message):
+    me = await bot.get_me()
+    caption = msg.caption or ""
+    mentioned = False
+
+    if msg.chat.type == "private":
+        mentioned = True
+    elif caption and f"@{me.username.lower()}" in caption.lower():
+        mentioned = True
+    elif msg.reply_to_message and msg.reply_to_message.from_user.id == me.id:
+        mentioned = True
+
+    if not mentioned:
+        return
+
+    file_id = msg.photo[-1].file_id
+    file = await bot.get_file(file_id)
+    file_url = f"https://api.telegram.org/file/bot{TG_TOKEN}/{file.file_path}"
+
+    update_history(msg.chat.id, "user", f"[Фото] {caption}")
+
+    await bot.send_chat_action(msg.chat.id, "typing")
+    await asyncio.sleep(1)
+
+    reply = await generate_reply(
+        msg.chat.id,
+        f"Пользователь отправил фото: {file_url}\nОписание: {caption}"
+    )
+    await msg.answer(reply)
 
 
-async def telegram_webhook(request):
+# ------------------------------
+# VIDEO
+# ------------------------------
+@dp.message(F.video)
+async def handle_video(msg: types.Message):
+    me = await bot.get_me()
+    caption = msg.caption or ""
+    mentioned = False
+
+    if msg.chat.type == "private":
+        mentioned = True
+    elif caption and f"@{me.username.lower()}" in caption.lower():
+        mentioned = True
+    elif msg.reply_to_message and msg.reply_to_message.from_user.id == me.id:
+        mentioned = True
+
+    if not mentioned:
+        return
+
+    file = await bot.get_file(msg.video.file_id)
+    file_url = f"https://api.telegram.org/file/bot{TG_TOKEN}/{file.file_path}"
+
+    update_history(msg.chat.id, "user", f"[Видео] {caption}")
+
+    await bot.send_chat_action(msg.chat.id, "typing")
+    await asyncio.sleep(1)
+
+    reply = await generate_reply(
+        msg.chat.id,
+        f"Пользователь отправил видео: {file_url}\nОписание: {caption}"
+    )
+    await msg.answer(reply)
+
+
+# ------------------------------
+# Commands
+# ------------------------------
+@dp.message(Command("reset"))
+async def reset(msg: types.Message):
+    chat_memory[msg.chat.id] = {"history": [], "mode": "stylish"}
+    await msg.answer("История очищена.")
+
+
+@dp.message(Command("mode"))
+async def mode(msg: types.Message):
+    parts = msg.text.split()
+    if len(parts) < 2:
+        return await msg.answer("Используй: /mode stylish или /mode detailed")
+    m = parts[1]
+    if m not in ["stylish", "detailed"]:
+        return await msg.answer("Некорректный режим.")
+    chat_memory.setdefault(msg.chat.id, {"history": [], "mode": "stylish"})["mode"] = m
+    await msg.answer(f"Режим установлен: {m}")
+
+
+# ------------------------------
+# Webhook application
+# ------------------------------
+app = web.Application()
+
+
+async def webhook(request):
     data = await request.json()
     update = types.Update.model_validate(data)
     await dp.feed_update(bot, update)
@@ -196,28 +286,26 @@ async def health(request):
     return web.Response(text="OK")
 
 
-app = web.Application()
-app.router.add_post(WEBHOOK_PATH, telegram_webhook)
+app.router.add_post(f"/webhook/{TG_TOKEN}", webhook)
 app.router.add_get("/", health)
 app.router.add_get("/health", health)
 
 
 async def on_startup(app):
-    if not PUBLIC_URL:
-        raise RuntimeError("PUBLIC_URL не указан в настройках Render!")
-
-    webhook_url = f"{PUBLIC_URL}{WEBHOOK_PATH}"
-    await bot.set_webhook(webhook_url)
-
-    print("Webhook установлен:", webhook_url)
+    asyncio.create_task(keep_alive())  # ping every minute
+    url = f"{PUBLIC_URL}/webhook/{TG_TOKEN}"
+    await bot.set_webhook(url)
+    print("Webhook set:", url)
 
 
 async def on_shutdown(app):
     await bot.delete_webhook()
 
 
+app.on_startup.append(on_startup)
+app.on_shutdown.append(on_shutdown)
+
+
 if __name__ == "__main__":
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
+    PORT = int(os.getenv("PORT", 8000))
     web.run_app(app, host="0.0.0.0", port=PORT)
-    asyncio.create_task(keep_alive())
