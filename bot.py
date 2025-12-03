@@ -139,27 +139,43 @@ async def handle_message(msg: types.Message):
     await asyncio.sleep(0.2)
     await msg.answer(reply)
 
-# --- Webhook для Render ---
+
+# --- Webhook ---
 WEBHOOK_PATH = f"/webhook/{TG_TOKEN}"
 PORT = int(os.environ.get("PORT", 8000))
-PUBLIC_URL = os.environ.get("PUBLIC_URL")  # Укажи в Render переменную с URL сервиса
+PUBLIC_URL = os.environ.get("PUBLIC_URL")
 
-async def handle(request):
-    update = types.Update(**await request.json())
-    await dp.process_update(update)
-    return web.Response()
+
+async def telegram_webhook(request):
+    data = await request.json()
+    update = types.Update.model_validate(data)
+    await dp.feed_update(bot, update)
+    return web.Response(text="OK")
+
+
+async def health(request):
+    return web.Response(text="OK")
+
 
 app = web.Application()
-app.router.add_post(WEBHOOK_PATH, handle)
+app.router.add_post(WEBHOOK_PATH, telegram_webhook)
+app.router.add_get("/", health)
+app.router.add_get("/health", health)
+
 
 async def on_startup(app):
     if not PUBLIC_URL:
-        raise RuntimeError("PUBLIC_URL не задан! Укажи в переменных Render URL сервиса.")
-    await bot.set_webhook(f"{PUBLIC_URL}{WEBHOOK_PATH}")
-    print(f"Webhook установлен на {PUBLIC_URL}{WEBHOOK_PATH}")
+        raise RuntimeError("PUBLIC_URL не указан в настройках Render!")
+
+    webhook_url = f"{PUBLIC_URL}{WEBHOOK_PATH}"
+    await bot.set_webhook(webhook_url)
+
+    print("Webhook установлен:", webhook_url)
+
 
 async def on_shutdown(app):
     await bot.delete_webhook()
+
 
 if __name__ == "__main__":
     app.on_startup.append(on_startup)
