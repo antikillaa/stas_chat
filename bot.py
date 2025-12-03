@@ -3,7 +3,7 @@ import re
 import asyncio
 from dotenv import load_dotenv
 
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from openai import OpenAI
 from aiohttp import web
@@ -72,6 +72,11 @@ async def generate_reply(chat_id: int, user_msg: str) -> str:
 bot_names = ["Стасян", "Стасяна", "Стасяну", "Стасяне", "Стасяном", "Стасяне"]
 
 # --- Обработчики ---
+
+@dp.message(F.photo)
+async def photo_react(message: types.Message):
+    await message.answer("Красиво! БРАТ! 📸")
+
 @dp.message(Command("reset"))
 async def reset_chat(msg: types.Message):
     chat_id = msg.chat.id
