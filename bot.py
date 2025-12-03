@@ -2,6 +2,8 @@ import os
 import random
 import re
 import asyncio
+
+import aiohttp
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, types, F
