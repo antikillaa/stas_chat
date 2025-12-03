@@ -1,4 +1,5 @@
 import os
+import random
 import re
 import asyncio
 from dotenv import load_dotenv
@@ -73,9 +74,48 @@ bot_names = ["Стасян", "Стасяна", "Стасяну", "Стасяне
 
 # --- Обработчики ---
 
-@dp.message(F.photo)
-async def photo_react(message: types.Message):
-    await message.answer("Красиво! БРАТ! 📸")
+# Список похвал в твоём стиле
+PRAISES = [
+    "О, брат, молодец 👍",
+    "Так держать, красавчик 💪",
+    "Красиво получилось 😎",
+    "Вот это уровень 👏",
+    "Брат, огонь 🔥",
+    "Ты прям на стиле 😏",
+    "Ну ты загнул, круто 👌",
+    "Брат, зачёт 👊",
+]
+
+# Слова-ключи, при которых бот похвалит
+POSITIVE_KEYWORDS = [
+    "сделал", "успех", "готово", "класс", "пофиксил", "отлично", "супер", "заработало", "получилось"
+]
+
+# Базовая вероятность случайной похвалы
+BASE_CHANCE = 0.2  # 20%
+KEYWORD_CHANCE = 0.9  # 90%, если есть ключевые слова
+
+@dp.message(F.text)
+async def smart_praise(message: types.Message):
+    # Игнорируем свои сообщения
+    me = await bot.get_me()
+    if message.from_user.id == me.id:
+        return
+
+    text = message.text.lower()
+
+    # Проверка ключевых слов
+    has_keyword = any(word in text for word in POSITIVE_KEYWORDS)
+
+    # Определяем вероятность
+    chance = KEYWORD_CHANCE if has_keyword else BASE_CHANCE
+
+    if random.random() < chance:
+        praise = random.choice(PRAISES)
+        # Имитируем typing
+        await bot.send_chat_action(message.chat.id, "typing")
+        await asyncio.sleep(random.uniform(0.5, 1.5))
+        await message.answer(praise)
 
 @dp.message(Command("reset"))
 async def reset_chat(msg: types.Message):
