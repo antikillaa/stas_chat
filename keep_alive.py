@@ -16,4 +16,4 @@ async def keep_alive():
                     print(f"Keep-Alive ping: {resp.status}")
             except Exception as e:
                 print(f"Keep-Alive ошибка: {e}")
-            await asyncio.sleep(4 * 60)  # каждые 4 минуты
+            await asyncio.sleep(60)  # каждые 4 минуты
