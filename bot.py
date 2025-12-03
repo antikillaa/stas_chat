@@ -208,6 +208,7 @@ app.router.add_get("/health", health)
 
 
 async def on_startup(app):
+    await bot.delete_webhook()
     if not PUBLIC_URL:
         raise RuntimeError("PUBLIC_URL не указан в настройках Render!")
 
