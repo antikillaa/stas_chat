@@ -138,7 +138,6 @@ async def main():
     print("Бот запущен на long polling...")
     asyncio.create_task(keep_alive())
     await dp.start_polling(bot)
-    asyncio.create_task(keep_alive())
 
 if __name__ == "__main__":
     asyncio.run(main())
