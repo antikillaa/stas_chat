@@ -137,15 +137,28 @@ async def is_mentioned(msg: types.Message) -> bool:
 
 
 # ------------------------------
+# PRAISE CHANCE
+# ------------------------------
+BASE_CHANCE = 0.2  # 20% случайно
+KEYWORD_CHANCE = 0.9  # 90% если есть ключевые слова
+POSITIVE_WORDS = ["сделал", "готово", "успех", "класс", "получилось", "супер", "отлично", "заработало"]
+
+async def praise_chance(msg: types.Message):
+    caption = msg.caption or ""
+    has_keyword = any(word in caption.lower() for word in POSITIVE_WORDS)
+    chance = KEYWORD_CHANCE if has_keyword else BASE_CHANCE
+    return random.random() < chance
+
+# ------------------------------
 # PHOTO HANDLER
 # ------------------------------
 @dp.message(F.photo)
 async def handle_photo(msg: types.Message):
     if not await is_mentioned(msg):
         return
-    await asyncio.sleep(0.5)
-    await msg.answer(random.choice(PRAISES))
-
+    if await praise_chance(msg):
+        await asyncio.sleep(0.5)
+        await msg.answer(random.choice(PRAISES))
 
 # ------------------------------
 # VIDEO HANDLER
@@ -154,8 +167,9 @@ async def handle_photo(msg: types.Message):
 async def handle_video(msg: types.Message):
     if not await is_mentioned(msg):
         return
-    await asyncio.sleep(0.5)
-    await msg.answer(random.choice(PRAISES))
+    if await praise_chance(msg):
+        await asyncio.sleep(0.5)
+        await msg.answer(random.choice(PRAISES))
 
 
 # ------------------------------
