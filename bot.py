@@ -94,8 +94,9 @@ POSITIVE_KEYWORDS = [
     "сделал", "успех", "готово", "класс", "пофиксил", "отлично", "супер", "заработало", "получилось"
 ]
 
-# Вероятность реакции (0.0–1.0)
-BASE_CHANCE = 0.5  # 50% на каждое медиа
+# Базовая вероятность случайной похвалы
+BASE_CHANCE = 0.2  # 20%
+KEYWORD_CHANCE = 0.9  # 90%, если есть ключевые слова
 
 @dp.message(F.text)
 async def smart_praise(message: types.Message):
@@ -222,6 +223,7 @@ async def on_startup(app):
 
     webhook_url = f"{PUBLIC_URL}{WEBHOOK_PATH}"
     await bot.set_webhook(webhook_url)
+    await dp.start_polling(bot)
 
     print("Webhook установлен:", webhook_url)
 
