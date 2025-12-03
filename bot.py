@@ -97,22 +97,18 @@ KEYWORD_CHANCE = 0.9  # 90%, если есть ключевые слова
 
 @dp.message(F.text)
 async def smart_praise(message: types.Message):
-    # Игнорируем свои сообщения
     me = await bot.get_me()
     if message.from_user.id == me.id:
-        return
+        return  # игнорируем свои сообщения
 
     text = message.text.lower()
 
     # Проверка ключевых слов
     has_keyword = any(word in text for word in POSITIVE_KEYWORDS)
-
-    # Определяем вероятность
     chance = KEYWORD_CHANCE if has_keyword else BASE_CHANCE
 
     if random.random() < chance:
         praise = random.choice(PRAISES)
-        # Имитируем typing
         await bot.send_chat_action(message.chat.id, "typing")
         await asyncio.sleep(random.uniform(0.5, 1.5))
         await message.answer(praise)
