@@ -1,11 +1,12 @@
-import asyncio
 import os
 import re
+import asyncio
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from openai import OpenAI
+from aiohttp import web
 
 # --- Настройка ---
 load_dotenv()
@@ -40,12 +41,6 @@ def update_history(chat_id: int, role: str, text: str):
     chat_memory[chat_id]["history"].append({"role": role, "content": text})
     chat_memory[chat_id]["history"] = chat_memory[chat_id]["history"][-MAX_HISTORY:]
 
-# --- Очистка тегов ---
-def clean_response(text: str) -> str:
-    # Убираем <think>...</think> и <act>...</act>
-    text = re.sub(r"<(think|act)>.*?</\1>", "", text, flags=re.IGNORECASE | re.DOTALL)
-    return text.strip()
-
 # --- Генерация ответа ---
 async def generate_reply(chat_id: int, user_msg: str) -> str:
     mode = chat_memory.get(chat_id, {}).get("mode", "stylish")
@@ -66,7 +61,10 @@ async def generate_reply(chat_id: int, user_msg: str) -> str:
     )
 
     assistant_reply = response.choices[0].message.content
-    assistant_reply = clean_response(assistant_reply)  # <-- очищаем от тегов
+
+    # Убираем теги <think>
+    assistant_reply = re.sub(r"<think>.*?</think>", "", assistant_reply, flags=re.DOTALL).strip()
+
     update_history(chat_id, "assistant", assistant_reply)
     return assistant_reply
 
@@ -95,10 +93,9 @@ async def handle_message(msg: types.Message):
     chat_id = msg.chat.id
     text = msg.text or ""
     mentioned = False
-
     me = await bot.get_me()
 
-    # --- Личные чаты всегда упоминание ---
+    # Личные чаты всегда упоминание
     if msg.chat.type == "private":
         mentioned = True
     else:
@@ -142,10 +139,29 @@ async def handle_message(msg: types.Message):
     await asyncio.sleep(0.2)
     await msg.answer(reply)
 
-# --- Запуск ---
-async def main():
-    print("Бот запущен...")
-    await dp.start_polling(bot)
+# --- Webhook для Render ---
+WEBHOOK_PATH = f"/webhook/{TG_TOKEN}"
+PORT = int(os.environ.get("PORT", 8000))
+PUBLIC_URL = os.environ.get("PUBLIC_URL")  # Укажи в Render переменную с URL сервиса
+
+async def handle(request):
+    update = types.Update(**await request.json())
+    await dp.process_update(update)
+    return web.Response()
+
+app = web.Application()
+app.router.add_post(WEBHOOK_PATH, handle)
+
+async def on_startup(app):
+    if not PUBLIC_URL:
+        raise RuntimeError("PUBLIC_URL не задан! Укажи в переменных Render URL сервиса.")
+    await bot.set_webhook(f"{PUBLIC_URL}{WEBHOOK_PATH}")
+    print(f"Webhook установлен на {PUBLIC_URL}{WEBHOOK_PATH}")
+
+async def on_shutdown(app):
+    await bot.delete_webhook()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+    web.run_app(app, host="0.0.0.0", port=PORT)
