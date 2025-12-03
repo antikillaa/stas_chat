@@ -4,22 +4,17 @@ import re
 import asyncio
 from dotenv import load_dotenv
 
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from openai import OpenAI
-from aiohttp import web
-
-from keep_alive import keep_alive
 
 # --- Настройка ---
 load_dotenv()
 TG_TOKEN = os.getenv("TG_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
-if not TG_TOKEN:
-    raise RuntimeError("TG_TOKEN не найден в .env")
-if not HF_TOKEN:
-    raise RuntimeError("HF_TOKEN не найден в .env")
+if not TG_TOKEN or not HF_TOKEN:
+    raise RuntimeError("TG_TOKEN или HF_TOKEN не найден!")
 
 bot = Bot(TG_TOKEN)
 dp = Dispatcher()
@@ -35,7 +30,7 @@ with open("persona.txt", "r", encoding="utf-8") as f:
     persona = f.read()
 
 # --- Память чата ---
-chat_memory = {}  # {chat_id: {"history": [], "mode": "stylish"}}
+chat_memory = {}
 MAX_HISTORY = 20
 
 def update_history(chat_id: int, role: str, text: str):
@@ -48,10 +43,7 @@ def update_history(chat_id: int, role: str, text: str):
 async def generate_reply(chat_id: int, user_msg: str) -> str:
     mode = chat_memory.get(chat_id, {}).get("mode", "stylish")
     system_prompt = f"Ты — это я. Общайся в моем стиле.\nМой стиль:\n{persona}\n"
-    if mode == "stylish":
-        system_prompt += "Отвечай коротко, естественно и как я бы сказал."
-    elif mode == "detailed":
-        system_prompt += "Отвечай подробно, развернуто и объясняй все детали."
+    system_prompt += "Отвечай коротко, естественно и как я бы сказал." if mode == "stylish" else "Отвечай подробно, развернуто и объясняй все детали."
 
     messages = [{"role": "system", "content": system_prompt}]
     if chat_id in chat_memory:
@@ -64,19 +56,14 @@ async def generate_reply(chat_id: int, user_msg: str) -> str:
     )
 
     assistant_reply = response.choices[0].message.content
-
-    # Убираем теги <think>
     assistant_reply = re.sub(r"<think>.*?</think>", "", assistant_reply, flags=re.DOTALL).strip()
-
     update_history(chat_id, "assistant", assistant_reply)
     return assistant_reply
 
 # --- Имя бота ---
 bot_names = ["Стасян", "Стасяна", "Стасяну", "Стасяне", "Стасяном", "Стасяне"]
 
-# --- Обработчики ---
-
-# Список похвал в твоём стиле
+# --- Авто-похвалы ---
 PRAISES = [
     "О, брат, молодец 👍",
     "Так держать, красавчик 💪",
@@ -86,31 +73,23 @@ PRAISES = [
     "Ты прям на стиле 😏",
     "Ну ты загнул, круто 👌",
     "Брат, зачёт 👊",
-    "Скиньте фото члена",
 ]
 
-# Слова-ключи, при которых бот похвалит
-POSITIVE_KEYWORDS = [
-    "сделал", "успех", "готово", "класс", "пофиксил", "отлично", "супер", "заработало", "получилось"
-]
-
-# Вероятность реакции (0.0–1.0)
-BASE_CHANCE = 0.5  # 50% на каждое медиа
+BASE_CHANCE = 0.5  # 50% шанс
 
 @dp.message()
-async def praise_on_media(msg: types.Message):
+async def auto_praise(msg: types.Message):
     me = await bot.get_me()
     if msg.from_user.id == me.id:
         return  # игнорируем свои сообщения
-
-    # Проверяем, есть ли фото или видео
     if msg.photo or msg.video or msg.animation:
         if random.random() < BASE_CHANCE:
             praise = random.choice(PRAISES)
             await bot.send_chat_action(msg.chat.id, "typing")
             await asyncio.sleep(random.uniform(0.5, 1.5))
-            await msg.answer(praise)
+            await msg.reply(praise)
 
+# --- Команды ---
 @dp.message(Command("reset"))
 async def reset_chat(msg: types.Message):
     chat_id = msg.chat.id
@@ -127,97 +106,39 @@ async def change_mode(msg: types.Message):
     chat_memory.setdefault(chat_id, {"history": [], "mode": "stylish"})["mode"] = parts[1]
     await msg.answer(f"Режим ответа изменен на '{parts[1]}' ✅")
 
+# --- Ответ на текстовые сообщения ---
 @dp.message()
-async def handle_message(msg: types.Message):
+async def handle_text(msg: types.Message):
     chat_id = msg.chat.id
     text = msg.text or ""
-    mentioned = False
     me = await bot.get_me()
-
-    # Личные чаты всегда упоминание
-    if msg.chat.type == "private":
-        mentioned = True
-    else:
-        # 1️⃣ Проверка @username
-        if msg.entities:
-            for ent in msg.entities:
-                if ent.type == "mention":
-                    mention_text = text[ent.offset: ent.offset + ent.length]
-                    if mention_text.lower() == f"@{me.username.lower()}":
-                        mentioned = True
-                        text = text.replace(mention_text, "").strip()
-                        break
-
-        # 2️⃣ Проверка имени бота
-        if not mentioned:
-            clean_text = re.sub(r"[^\w\s]", "", text.lower())
-            words = clean_text.split()
-            for name in bot_names:
-                if name.lower() in words:
-                    mentioned = True
-                    text = re.sub(name, "", text, flags=re.IGNORECASE).strip()
-                    break
-
-        # 3️⃣ Проверка reply_to_message
-        if not mentioned and msg.reply_to_message:
-            if msg.reply_to_message.from_user.id == me.id:
-                mentioned = True
+    mentioned = msg.chat.type == "private" or (msg.reply_to_message and msg.reply_to_message.from_user.id == me.id)
 
     if not mentioned:
-        return  # игнорируем сообщение в группе, если не упомянуты и не reply
+        return
 
-    # --- Обновляем историю ---
     update_history(chat_id, "user", text)
-
-    # --- Симуляция typing ---
     await bot.send_chat_action(chat_id, "typing")
     await asyncio.sleep(1)
-
-    # --- Генерация ответа ---
     reply = await generate_reply(chat_id, text)
     await asyncio.sleep(0.2)
     await msg.answer(reply)
 
+# --- Keep-alive ---
+async def keep_alive():
+    while True:
+        try:
+            await bot.get_me()
+        except Exception:
+            pass
+        await asyncio.sleep(300)
 
-# --- Webhook ---
-WEBHOOK_PATH = f"/webhook/{TG_TOKEN}"
-PORT = int(os.environ.get("PORT", 8000))
-PUBLIC_URL = os.environ.get("PUBLIC_URL")
-
-
-async def telegram_webhook(request):
-    data = await request.json()
-    update = types.Update.model_validate(data)
-    await dp.feed_update(bot, update)
-    return web.Response(text="OK")
-
-
-async def health(request):
-    return web.Response(text="OK")
-
-
-app = web.Application()
-app.router.add_post(WEBHOOK_PATH, telegram_webhook)
-app.router.add_get("/", health)
-app.router.add_get("/health", health)
-
-
-async def on_startup(app):
-    if not PUBLIC_URL:
-        raise RuntimeError("PUBLIC_URL не указан в настройках Render!")
-
-    webhook_url = f"{PUBLIC_URL}{WEBHOOK_PATH}"
-    await bot.set_webhook(webhook_url)
-
-    print("Webhook установлен:", webhook_url)
-
-
-async def on_shutdown(app):
-    await bot.delete_webhook()
-
+# --- Запуск ---
+async def main():
+    print("Бот запущен на long polling...")
+    asyncio.create_task(keep_alive())
+    await dp.start_polling(bot)
+    asyncio.create_task(keep_alive())
 
 if __name__ == "__main__":
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-    web.run_app(app, host="0.0.0.0", port=PORT)
-    asyncio.create_task(keep_alive())
+    asyncio.run(main())
