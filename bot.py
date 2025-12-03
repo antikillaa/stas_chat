@@ -9,6 +9,8 @@ from aiogram.filters import Command
 from openai import OpenAI
 from aiohttp import web
 
+from keep_alive import keep_alive
+
 # --- Настройка ---
 load_dotenv()
 TG_TOKEN = os.getenv("TG_TOKEN")
@@ -218,3 +220,4 @@ if __name__ == "__main__":
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
     web.run_app(app, host="0.0.0.0", port=PORT)
+    asyncio.create_task(keep_alive())
