@@ -92,27 +92,22 @@ POSITIVE_KEYWORDS = [
     "сделал", "успех", "готово", "класс", "пофиксил", "отлично", "супер", "заработало", "получилось"
 ]
 
-# Базовая вероятность случайной похвалы
-BASE_CHANCE = 0.2  # 20%
-KEYWORD_CHANCE = 0.9  # 90%, если есть ключевые слова
+# Вероятность реакции (0.0–1.0)
+BASE_CHANCE = 0.5  # 50% на каждое медиа
 
-@dp.message(F.text)
-async def smart_praise(message: types.Message):
+@dp.message()
+async def praise_on_media(msg: types.Message):
     me = await bot.get_me()
-    if message.from_user.id == me.id:
+    if msg.from_user.id == me.id:
         return  # игнорируем свои сообщения
 
-    text = message.text.lower()
-
-    # Проверка ключевых слов
-    has_keyword = any(word in text for word in POSITIVE_KEYWORDS)
-    chance = KEYWORD_CHANCE if has_keyword else BASE_CHANCE
-
-    if random.random() < chance:
-        praise = random.choice(PRAISES)
-        await bot.send_chat_action(message.chat.id, "typing")
-        await asyncio.sleep(random.uniform(0.5, 1.5))
-        await message.answer(praise)
+    # Проверяем, есть ли фото или видео
+    if msg.photo or msg.video or msg.animation:
+        if random.random() < BASE_CHANCE:
+            praise = random.choice(PRAISES)
+            await bot.send_chat_action(msg.chat.id, "typing")
+            await asyncio.sleep(random.uniform(0.5, 1.5))
+            await msg.answer(praise)
 
 @dp.message(Command("reset"))
 async def reset_chat(msg: types.Message):
