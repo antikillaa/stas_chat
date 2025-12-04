@@ -4,7 +4,8 @@ import asyncio
 import logging
 import random
 import re
-from typing import Any
+from typing import Any, Dict
+from concurrent.futures import ThreadPoolExecutor
 
 import aiohttp
 from aiohttp import web
@@ -14,47 +15,54 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from openai import OpenAI
 
-# ---------------------------
-# config (env)
-# ---------------------------
+# ----------------------------
+# Config (env)
+# ----------------------------
 load_dotenv()
 TG_TOKEN = os.getenv("TG_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
-PUBLIC_URL = os.getenv("PUBLIC_URL")  # https://your-service.onrender.com
+PUBLIC_URL = os.getenv("PUBLIC_URL")  # e.g. https://your-service.onrender.com
 PORT = int(os.getenv("PORT", 8000))
 
-# queue/worker tuning
-WORKER_COUNT = int(os.getenv("WORKER_COUNT", 2))     # сколько параллельных воркеров
-QUEUE_MAXSIZE = int(os.getenv("QUEUE_MAXSIZE", 200)) # max queued updates
-WORKER_TIMEOUT = float(os.getenv("WORKER_TIMEOUT", 35))  # сек на обработку одного update
+# tuning
+WORKER_COUNT = int(os.getenv("WORKER_COUNT", 2))      # workers for dp.feed_update
+LLM_WORKERS = int(os.getenv("LLM_WORKERS", 2))        # workers for LLM queue
+QUEUE_MAXSIZE = int(os.getenv("QUEUE_MAXSIZE", 500))
+LLM_QUEUE_MAXSIZE = int(os.getenv("LLM_QUEUE_MAXSIZE", 200))
+WORKER_TIMEOUT = float(os.getenv("WORKER_TIMEOUT", 40))  # seconds for dp.feed_update timeout
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", 60))     # seconds to wait for LLM call
+LLM_RETRIES = int(os.getenv("LLM_RETRIES", 2))
+
+BASE_CHANCE = float(os.getenv("BASE_CHANCE", 0.2))
+KEYWORD_CHANCE = float(os.getenv("KEYWORD_CHANCE", 0.9))
 
 if not TG_TOKEN or not HF_TOKEN or not PUBLIC_URL:
-    raise RuntimeError("TG_TOKEN, HF_TOKEN и PUBLIC_URL должны быть заданы в .env")
+    raise RuntimeError("Please set TG_TOKEN, HF_TOKEN and PUBLIC_URL in environment")
 
-# ---------------------------
-# logging
-# ---------------------------
+# ----------------------------
+# Logging
+# ----------------------------
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
-logger = logging.getLogger("telegram_bot")
+logger = logging.getLogger("sta_bot")
 
-# ---------------------------
-# create bot & dispatcher & LLM client
-# ---------------------------
-bot = Bot(TG_TOKEN)
+# ----------------------------
+# Bot, Dispatcher, LLM client
+# ----------------------------
+bot = Bot(token=TG_TOKEN)
 dp = Dispatcher()
 
 client = OpenAI(base_url="https://router.huggingface.co/v1", api_key=HF_TOKEN)
 
-# ---------------------------
-# persona and memory
-# ---------------------------
+# ----------------------------
+# Persona & memory
+# ----------------------------
 with open("persona.txt", "r", encoding="utf-8") as f:
     persona = f.read()
 
-chat_memory: dict[int, dict] = {}
+chat_memory: Dict[int, Dict[str, Any]] = {}
 MAX_HISTORY = 20
 
 
@@ -64,13 +72,70 @@ def update_history(chat_id: int, role: str, text: str):
     chat_memory[chat_id]["history"] = chat_memory[chat_id]["history"][-MAX_HISTORY:]
 
 
-# ---------------------------
-# LLM generation (unchanged core, but can timeout via worker)
-# ---------------------------
+# ----------------------------
+# PRAISES and mention helper
+# ----------------------------
+PRAISES = [
+    "О, брат, молодец 👍",
+    "Красиво получилось 😎",
+    "Ты прям на стиле 😏",
+    "Брат, огонь 🔥",
+    "Зачёт 👊",
+]
+
+POSITIVE_WORDS = [
+    "сделал", "готово", "успех", "класс", "получилось", "супер", "отлично", "заработало"
+]
+
+bot_names = ["Стасян", "Стасяне", "Стасяну", "Стасяном"]
+
+
+async def is_mentioned(msg: types.Message) -> bool:
+    me = await bot.get_me()
+    text = (msg.text or "") + " " + (msg.caption or "")
+    low = text.lower()
+
+    # private chat -> always mention
+    if msg.chat.type == "private":
+        return True
+
+    # @username mention
+    if msg.entities:
+        for ent in msg.entities:
+            if ent.type == "mention":
+                try:
+                    mention = text[ent.offset:ent.offset + ent.length].lower()
+                except Exception:
+                    mention = ""
+                if mention == f"@{me.username.lower()}":
+                    return True
+
+    # name substring
+    for name in bot_names:
+        if name.lower() in low:
+            return True
+
+    # reply to bot
+    if msg.reply_to_message and msg.reply_to_message.from_user:
+        if msg.reply_to_message.from_user.id == me.id:
+            return True
+
+    return False
+
+
+def praise_chance_sync(caption: str) -> bool:
+    caption_low = (caption or "").lower()
+    has_keyword = any(w in caption_low for w in POSITIVE_WORDS)
+    chance = KEYWORD_CHANCE if has_keyword else BASE_CHANCE
+    return random.random() < chance
+
+
+# ----------------------------
+# LLM generation (sync wrapper to run in executor)
+# ----------------------------
 def generate_reply_sync(chat_id: int, text: str) -> str:
     """
-    Synchronous wrapper around client.chat.completions.create
-    We call this inside background worker (not in webhook handler).
+    Blocking call to LLM (runs in threadpool). Returns generated reply (string).
     """
     mode = chat_memory.get(chat_id, {}).get("mode", "stylish")
     system_prompt = f"Ты — это я. Общайся в моем стиле.\nМой стиль:\n{persona}\n"
@@ -84,140 +149,105 @@ def generate_reply_sync(chat_id: int, text: str) -> str:
         messages += chat_memory[chat_id]["history"]
     messages.append({"role": "user", "content": text})
 
-    # NOTE: this call may block (network). We run it in background worker.
-    response = client.chat.completions.create(
-        model="deepseek-ai/DeepSeek-R1",
-        messages=messages,
-    )
-    reply = response.choices[0].message.content
-    reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip()
-    update_history(chat_id, "assistant", reply)
-    return reply
+    try:
+        logger.info("LLM call: chat_id=%s text_preview=%s", chat_id, text[:200])
+        response = client.chat.completions.create(
+            model="deepseek-ai/DeepSeek-R1",
+            messages=messages,
+        )
+        reply = response.choices[0].message.content
+        # strip internal <think> tags
+        reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip()
+        update_history(chat_id, "assistant", reply)
+        logger.info("LLM success: chat_id=%s reply_preview=%s", chat_id, reply[:200])
+        return reply
+    except Exception as e:
+        logger.exception("LLM call failed: %s", e)
+        raise
 
 
-# ---------------------------
-# PRAISES and mention helper
-# ---------------------------
-PRAISES = [
-    "О, брат, молодец 👍",
-    "Красиво получилось 😎",
-    "Ты прям на стиле 😏",
-    "Брат, огонь 🔥",
-    "Зачёт 👊",
-]
-POSITIVE_WORDS = [
-    "сделал", "готово", "успех", "класс", "получилось", "супер", "отлично", "заработало"
-]
-BASE_CHANCE = float(os.getenv("BASE_CHANCE", 0.2))
-KEYWORD_CHANCE = float(os.getenv("KEYWORD_CHANCE", 0.9))
+# ----------------------------
+# Lightweight handlers (these run when dp.feed_update is executed by update workers)
+# - TEXT: only enqueue LLM job to llm_queue
+# - PHOTO/VIDEO: send praise (no LLM), but still quick
+# ----------------------------
 
-bot_names = ["Стасян", "Стасяне", "Стасяну", "Стасяном"]
+# We'll refer to llm_queue inside handlers; define below before start
 
-
-async def is_mentioned(msg: types.Message) -> bool:
-    me = await bot.get_me()
-    # check both text and caption
-    text = (msg.text or "") + " " + (msg.caption or "")
-    low = text.lower()
-
-    # private chat always considered mention
-    if msg.chat.type == "private":
-        return True
-
-    # @username mention
-    if msg.entities:
-        for ent in msg.entities:
-            if ent.type == "mention":
-                mention = text[ent.offset: ent.offset + ent.length].lower()
-                if mention == f"@{me.username.lower()}":
-                    return True
-
-    # name substring
-    for name in bot_names:
-        if name.lower() in low:
-            return True
-
-    # reply to bot
-    if msg.reply_to_message and msg.reply_to_message.from_user:
-        if msg.reply_to_message.from_user.id == (await bot.get_me()).id:
-            return True
-
-    return False
-
-
-async def praise_chance(msg: types.Message) -> bool:
-    caption = (msg.caption or "") .lower()
-    has_keyword = any(w in caption for w in POSITIVE_WORDS)
-    chance = KEYWORD_CHANCE if has_keyword else BASE_CHANCE
-    return random.random() < chance
-
-
-# ---------------------------
-# Handlers (these will be executed in background worker via dp.feed_update)
-# - keep these minimal: photo/video -> reply with PRAISE (no LLM),
-#   text -> call LLM (we placed generate_reply_sync to be used inside handler,
-#   but handler must be synchronous in sense of not blocking webhook)
-# Note: dp.feed_update runs handlers normally. We run dp.feed_update in background worker.
-# ---------------------------
 
 @dp.message(F.photo)
-async def handle_photo(msg: types.Message):
-    """
-    This handler runs in background worker (because dp.feed_update is called from worker).
-    It must be quick — we reply with random PRAISE (no LLM calls here).
-    """
+async def _photo_handler(msg: types.Message):
     try:
         if not await is_mentioned(msg):
+            logger.debug("Photo ignored (not mentioned). chat=%s", msg.chat.id)
             return
-        if await praise_chance(msg):
-            await asyncio.sleep(random.uniform(0.4, 1.2))
+
+        # chance decision (sync)
+        if praise_chance_sync(msg.caption or ""):
+            await asyncio.sleep(random.uniform(0.4, 1.1))
             await msg.answer(random.choice(PRAISES))
             logger.info("Sent praise for photo in chat %s", msg.chat.id)
+        else:
+            logger.debug("Photo mention, but chance skipped. chat=%s", msg.chat.id)
     except Exception:
-        logger.exception("Error in handle_photo")
+        logger.exception("Error in photo handler")
 
 
 @dp.message(F.video)
-async def handle_video(msg: types.Message):
+async def _video_handler(msg: types.Message):
     try:
         if not await is_mentioned(msg):
+            logger.debug("Video ignored (not mentioned). chat=%s", msg.chat.id)
             return
-        if await praise_chance(msg):
-            await asyncio.sleep(random.uniform(0.4, 1.2))
+
+        if praise_chance_sync(msg.caption or ""):
+            await asyncio.sleep(random.uniform(0.4, 1.1))
             await msg.answer(random.choice(PRAISES))
             logger.info("Sent praise for video in chat %s", msg.chat.id)
+        else:
+            logger.debug("Video mention, but chance skipped. chat=%s", msg.chat.id)
     except Exception:
-        logger.exception("Error in handle_video")
+        logger.exception("Error in video handler")
 
 
 @dp.message(F.text)
-async def handle_text(msg: types.Message):
+async def _text_handler(msg: types.Message):
     """
-    Text handler: only run when mentioned; performs LLM generation.
-    This handler will call generate_reply_sync which blocks network.
-    It's okay: this handler runs inside background worker.
+    Lightweight: if mentioned, push an LLM job to llm_queue (do not call LLM here).
     """
     try:
         if not await is_mentioned(msg):
+            logger.debug("Text ignored (not mentioned). chat=%s", msg.chat.id)
             return
 
         text = msg.text or ""
         update_history(msg.chat.id, "user", text)
 
-        # simulate typing
-        await bot.send_chat_action(msg.chat.id, "typing")
-        await asyncio.sleep(0.8)
+        # build job
+        job = {
+            "type": "llm",
+            "chat_id": msg.chat.id,
+            "text": text,
+            "from_id": msg.from_user.id,
+            "msg_id": msg.message_id,
+        }
 
-        # Run blocking LLM in threadpool to avoid blocking event loop in case
-        loop = asyncio.get_running_loop()
-        reply = await loop.run_in_executor(None, generate_reply_sync, msg.chat.id, text)
-        await msg.answer(reply)
-        logger.info("LLM reply sent to chat %s", msg.chat.id)
+        # try to enqueue (non-blocking)
+        try:
+            llm_queue.put_nowait(job)
+            logger.info("Enqueued LLM job for chat %s (msg %s)", msg.chat.id, msg.message_id)
+        except asyncio.QueueFull:
+            logger.warning("LLM queue full, dropping LLM job for chat %s", msg.chat.id)
+            # optionally: inform user that bot is busy
+            try:
+                await msg.reply("Сорян, сейчас перегруз — попробуй чуть позже.")
+            except Exception:
+                pass
+
     except Exception:
-        logger.exception("Error in handle_text")
+        logger.exception("Error in text handler")
 
 
-# Commands
 @dp.message(Command("reset"))
 async def cmd_reset(msg: types.Message):
     chat_memory[msg.chat.id] = {"history": [], "mode": "stylish"}
@@ -238,68 +268,106 @@ async def cmd_mode(msg: types.Message):
     logger.info("Set mode=%s for chat %s", m, msg.chat.id)
 
 
-# ---------------------------
-# Queue + Workers for safe background processing
-# ---------------------------
-update_queue: "asyncio.Queue[dict[str, Any]]" = asyncio.Queue(maxsize=QUEUE_MAXSIZE)
-workers_tasks: list[asyncio.Task] = []
+# ----------------------------
+# Queues and workers
+# ----------------------------
+update_queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_MAXSIZE)
+llm_queue: asyncio.Queue = asyncio.Queue(maxsize=LLM_QUEUE_MAXSIZE)
+
+update_workers: list[asyncio.Task] = []
+llm_workers: list[asyncio.Task] = []
+
+# use a threadpool for blocking LLM network calls
+executor = ThreadPoolExecutor(max_workers=LLM_WORKERS * 2)
 
 
-async def process_update_worker(worker_id: int):
-    logger.info("Worker %d started", worker_id)
+async def update_worker(worker_id: int):
+    logger.info("Update worker %s started", worker_id)
     while True:
         data = await update_queue.get()
         try:
-            # validate update quickly (avoid blocking)
+            # quick validation
             try:
                 update = types.Update.model_validate(data)
-            except Exception as e:
-                logger.exception("Invalid update data: %s", e)
+            except Exception:
+                logger.exception("Invalid update received (skipping)")
                 continue
 
-            # feed update with timeout to avoid stuck workers
+            # execute dp.feed_update with timeout to avoid stuck
             try:
                 await asyncio.wait_for(dp.feed_update(bot, update), timeout=WORKER_TIMEOUT)
             except asyncio.TimeoutError:
-                logger.error("Worker %d: processing update timed out", worker_id)
+                logger.error("dp.feed_update timeout in worker %s", worker_id)
             except Exception:
-                logger.exception("Worker %d: error while feeding update", worker_id)
+                logger.exception("Error while processing update in worker %s", worker_id)
 
         finally:
             update_queue.task_done()
 
 
-# safe enqueue with backpressure
-async def enqueue_update_safe(data: dict):
-    try:
-        update_queue.put_nowait(data)
-    except asyncio.QueueFull:
-        # queue full -> drop oldest or skip; we drop the new update to avoid memory pressure
-        logger.warning("Update queue full — dropping update")
-        # alternative strategies: await put, or pop one and put new
+async def llm_worker(worker_id: int):
+    logger.info("LLM worker %s started", worker_id)
+    while True:
+        job = await llm_queue.get()
+        try:
+            chat_id = job.get("chat_id")
+            text = job.get("text")
+            msg_id = job.get("msg_id")
+            from_id = job.get("from_id")
+
+            attempt = 0
+            reply_text = None
+            # run LLM in executor with timeout and retry
+            while attempt <= LLM_RETRIES:
+                attempt += 1
+                try:
+                    loop = asyncio.get_running_loop()
+                    # run blocking LLM in threadpool
+                    coro = loop.run_in_executor(executor, generate_reply_sync, chat_id, text)
+                    reply_text = await asyncio.wait_for(coro, timeout=LLM_TIMEOUT)
+                    break
+                except asyncio.TimeoutError:
+                    logger.error("LLM attempt %s timed out for chat %s", attempt, chat_id)
+                except Exception as e:
+                    logger.exception("LLM attempt %s failed for chat %s: %s", attempt, chat_id, e)
+
+            if reply_text is None:
+                # final failure
+                try:
+                    await bot.send_message(chat_id, "Сорян, не могу ответить сейчас — попробуй позже.")
+                    logger.error("LLM ultimately failed for chat %s", chat_id)
+                except Exception:
+                    logger.exception("Failed to send failure message to chat %s", chat_id)
+            else:
+                try:
+                    await bot.send_message(chat_id, reply_text, reply_to_message_id=msg_id)
+                    logger.info("Sent LLM reply to chat %s", chat_id)
+                except Exception:
+                    logger.exception("Failed to send LLM reply to chat %s", chat_id)
+
+        finally:
+            llm_queue.task_done()
 
 
-# ---------------------------
-# Webhook + health handlers
-# ---------------------------
+# ----------------------------
+# Webhook & health handlers
+# ----------------------------
 async def webhook_handler(request: web.Request):
     """
-    Very fast: accept JSON and queue it for background processing.
-    Return 200 OK immediately.
+    Fast: accepts request, parses JSON, logs some info, enqueues to update_queue and returns 200 immediately.
     """
     try:
         data = await request.json()
     except Exception:
-        logger.exception("Bad JSON in webhook")
+        logger.exception("Bad JSON received at webhook")
         return web.Response(status=400, text="bad json")
 
-    # quick log
-    logger.debug("Received webhook update id=%s", data.get("update_id"))
-
-    # schedule for background processing
-    asyncio.create_task(enqueue_update_safe(data))
-
-    # respond fast
+    logger.debug("Webhook received update_id=%s", data.get("update_id"))
+    # schedule enqueue in background to keep handler fast
+    try:
+        update_queue.put_nowait(data)
+    except asyncio.QueueFull:
+        logger.warning("Update queue full, dropping update id=%s", data.get("update_id"))
     return web.Response(text="OK")
 
 
@@ -307,37 +375,42 @@ async def health_handler(request: web.Request):
     return web.Response(text="OK")
 
 
-# ---------------------------
-# keep_alive pinger (background)
-# ---------------------------
+# ----------------------------
+# Keep-alive pinger
+# ----------------------------
 async def keep_alive_task():
     url = f"{PUBLIC_URL}/health"
-    logger.info("Keep-alive will ping %s every 60s", url)
+    logger.info("keep_alive pinging %s every 60s", url)
     async with aiohttp.ClientSession() as session:
         while True:
             try:
                 async with session.get(url, timeout=10) as resp:
-                    logger.debug("Keep-alive ping status: %s", resp.status)
+                    logger.debug("keep_alive status=%s", resp.status)
             except Exception as e:
-                logger.warning("Keep-alive error: %s", e)
+                logger.warning("keep_alive error: %s", e)
             await asyncio.sleep(60)
 
 
-# ---------------------------
-# startup/shutdown
-# ---------------------------
+# ----------------------------
+# Startup / Shutdown
+# ----------------------------
 async def on_startup(app: web.Application):
-    logger.info("App starting, creating workers and setting webhook")
+    logger.info("App startup: creating workers and setting webhook")
 
-    # create workers
+    # spawn update workers
     for i in range(WORKER_COUNT):
-        t = asyncio.create_task(process_update_worker(i + 1))
-        workers_tasks.append(t)
+        t = asyncio.create_task(update_worker(i + 1))
+        update_workers.append(t)
 
-    # schedule keep_alive
+    # spawn llm workers
+    for i in range(LLM_WORKERS):
+        t = asyncio.create_task(llm_worker(i + 1))
+        llm_workers.append(t)
+
+    # spawn keep_alive
     asyncio.create_task(keep_alive_task())
 
-    # set webhook with Telegram (ensure previous webhook removed)
+    # set webhook: delete old then set
     url = f"{PUBLIC_URL}/webhook/{TG_TOKEN}"
     try:
         await bot.delete_webhook(drop_pending_updates=True)
@@ -349,21 +422,27 @@ async def on_startup(app: web.Application):
 
 
 async def on_shutdown(app: web.Application):
-    logger.info("App shutting down: deleting webhook and cancelling workers")
+    logger.info("Shutdown: deleting webhook and cancelling workers")
     try:
         await bot.delete_webhook()
     except Exception:
-        logger.exception("Error deleting webhook on shutdown")
+        logger.exception("Error deleting webhook on shutdown (ignored)")
 
-    # cancel worker tasks
-    for t in workers_tasks:
+    # cancel tasks
+    for t in update_workers + llm_workers:
         t.cancel()
-    await bot.session.close()
+    try:
+        await bot.session.close()
+    except Exception:
+        pass
+
+    # shutdown executor
+    executor.shutdown(wait=False)
 
 
-# ---------------------------
-# app routes
-# ---------------------------
+# ----------------------------
+# App routes and run
+# ----------------------------
 app = web.Application()
 app.router.add_post(f"/webhook/{TG_TOKEN}", webhook_handler)
 app.router.add_get("/health", health_handler)
@@ -372,10 +451,6 @@ app.router.add_get("/", health_handler)
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
-
-# ---------------------------
-# run
-# ---------------------------
 if __name__ == "__main__":
     logger.info("Starting web app on port %s", PORT)
     web.run_app(app, host="0.0.0.0", port=PORT)
