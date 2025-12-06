@@ -84,7 +84,7 @@ PRAISES = [
     "Ты прям на стиле 😏",
     "Ну ты загнул, круто 👌",
     "Брат, зачёт 👊",
-    "Скиньте фото члена",
+    "Скиньте фото члена 😏",
 ]
 
 # Слова-ключи, при которых бот похвалит
@@ -95,19 +95,19 @@ POSITIVE_KEYWORDS = [
 # Вероятность реакции (0.0–1.0)
 BASE_CHANCE = 0.5  # 50% на каждое медиа
 
-@dp.message()
-async def praise_on_media(msg: types.Message):
-    me = await bot.get_me()
-    if msg.from_user.id == me.id:
-        return  # игнорируем свои сообщения
-
-    # Проверяем, есть ли фото или видео
-    if msg.photo or msg.video or msg.animation:
-        if random.random() < BASE_CHANCE:
-            praise = random.choice(PRAISES)
-            await bot.send_chat_action(msg.chat.id, "typing")
-            await asyncio.sleep(random.uniform(0.5, 1.5))
-            await msg.answer(praise)
+# @dp.message()
+# async def praise_on_media(msg: types.Message):
+#     me = await bot.get_me()
+#     if msg.from_user.id == me.id:
+#         return  # игнорируем свои сообщения
+#
+#     # Проверяем, есть ли фото или видео
+#     if msg.photo or msg.video or msg.animation:
+#         if random.random() < BASE_CHANCE:
+#             praise = random.choice(PRAISES)
+#             await bot.send_chat_action(msg.chat.id, "typing")
+#             await asyncio.sleep(random.uniform(0.5, 1.5))
+#             await msg.answer(praise)
 
 @dp.message(Command("reset"))
 async def reset_chat(msg: types.Message):
