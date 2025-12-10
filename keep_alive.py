@@ -14,7 +14,7 @@ async def keep_alive(bot, webhook_url):
             try:
                 async with session.get(PUBLIC_URL) as resp:
                     print(f"Keep-Alive ping: {resp.status}")
-                await bot.set_webhook(webhook_url)
+                # await bot.set_webhook(webhook_url)
             except Exception as e:
                 print(f"Keep-Alive ошибка: {e}")
             await asyncio.sleep(30)  # каждые 30 секунд
