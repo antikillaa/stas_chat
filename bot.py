@@ -9,6 +9,8 @@ from aiogram.filters import Command
 from openai import OpenAI
 from aiohttp import web
 
+from keep_alive import keep_alive
+
 # --- Настройка ---
 load_dotenv()
 TG_TOKEN = os.getenv("TG_TOKEN")
@@ -206,6 +208,7 @@ async def on_startup(app):
 
     webhook_url = f"{PUBLIC_URL}{WEBHOOK_PATH}"
     await bot.set_webhook(webhook_url)
+    await keep_alive(bot, webhook_url)
 
     print("Webhook установлен:", webhook_url)
 
