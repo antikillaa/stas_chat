@@ -9,6 +9,8 @@ from aiogram.filters import Command
 from openai import OpenAI
 from aiohttp import web
 
+AI_MODEL = "deepseek-ai/DeepSeek-R1"
+
 # --- Настройка ---
 load_dotenv()
 TG_TOKEN = os.getenv("TG_TOKEN")
@@ -57,7 +59,7 @@ async def generate_reply(chat_id: int, user_msg: str) -> str:
     messages.append({"role": "user", "content": user_msg})
 
     response = client.chat.completions.create(
-        model="deepseek-ai/DeepSeek-R1",
+        model=AI_MODEL,
         messages=messages
     )
 
