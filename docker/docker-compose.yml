@@ -1,0 +1,44 @@
+services:
+  telegram-bot:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: stas-chat-bot
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      - AI_MODEL=phi
+      - LM_STUDIO_URL=http://127.0.0.1:1234/v1
+    volumes:
+      - ../persona.txt:/app/persona.txt:ro
+    network_mode: host
+    depends_on:
+      - model-init
+
+  model-init:
+    image: alpine:latest
+    container_name: model-init
+    network_mode: host
+    command: >
+      sh -c "apk add --no-cache curl &&
+             sleep 15 &&
+             curl -X POST http://127.0.0.1:1234/api/pull -d '{\"name\":\"phi\"}' &&
+             echo 'Model ready!' &&
+             sleep infinity"
+    depends_on:
+      - lm-studio
+
+  lm-studio:
+    image: ollama/ollama:latest
+    container_name: lm-studio-server
+    restart: unless-stopped
+    ports:
+      - "1234:1234"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:1234
+
+volumes:
+  ollama_data:

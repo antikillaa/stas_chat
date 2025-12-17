@@ -8,7 +8,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from openai import OpenAI
 
-AI_MODEL = "openai/gpt-oss-20b"
+AI_MODEL = os.getenv("AI_MODEL", "llama2")
 MAX_HISTORY = 20
 BASE_CHANCE = 0.5
 
@@ -23,7 +23,8 @@ if not HF_TOKEN:
 bot = Bot(TG_TOKEN)
 dp = Dispatcher()
 
-client = OpenAI(base_url="http://127.0.0.1:1234/v1", api_key="lm-studio")
+LM_STUDIO_URL = os.getenv("LM_STUDIO_URL", "http://127.0.0.1:1234/v1")
+client = OpenAI(base_url=LM_STUDIO_URL, api_key="lm-studio")
 
 with open("persona.txt", "r", encoding="utf-8") as f:
     persona = f.read()

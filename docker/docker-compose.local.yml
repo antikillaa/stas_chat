@@ -1,0 +1,13 @@
+services:
+  telegram-bot:
+    build: ..
+    container_name: stas-chat-bot
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    volumes:
+      - ../persona.txt:/app/persona.txt:ro
+    network_mode: host
+    environment:
+      - AI_MODEL=openai/gpt-oss-20b
+      - LM_STUDIO_URL=http://host.docker.internal:1234/v1
