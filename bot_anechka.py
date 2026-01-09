@@ -16,7 +16,7 @@ load_dotenv()
 
 TG_TOKEN = os.getenv("TG_TOKEN_ANN")
 LM_STUDIO_URL = os.getenv("LM_STUDIO_URL", "http://127.0.0.1:1234/v1")
-AI_MODEL = os.getenv("AI_MODEL", "openai/gpt-oss-20b")
+AI_MODEL = os.getenv("AI_MODEL", "llama2")
 
 if not TG_TOKEN:
     raise RuntimeError("TG_TOKEN_ANN not found")
@@ -150,8 +150,27 @@ INIT_COOLDOWN = 60 * 15
 # =====================
 @dp.message()
 async def handle_message(msg: types.Message):
+    print(
+        "FROM:",
+        msg.from_user.username,
+        "IS_BOT:",
+        msg.from_user.is_bot,
+        "TEXT:",
+        msg.text,
+        "ENTITIES:",
+        msg.entities,
+    )
+
+    print(
+        "TYPE:",
+        "text" if msg.text else
+        "caption" if msg.caption else
+        "media_only"
+    )
+
     chat_id = msg.chat.id
-    text = msg.text or ""
+    raw_text = msg.text or msg.caption or ""
+    text = raw_text.strip()
     now = time.time()
 
     me = await bot.get_me()

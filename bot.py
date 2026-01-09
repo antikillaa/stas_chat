@@ -10,7 +10,7 @@ from openai import OpenAI
 
 AI_MODEL = os.getenv("AI_MODEL", "llama2")
 MAX_HISTORY = 20
-BASE_CHANCE = 0.5
+BASE_CHANCE = 0.2
 
 load_dotenv()
 TG_TOKEN = os.getenv("TG_TOKEN")
@@ -79,8 +79,28 @@ def _clean_text_for_name_check(text: str) -> str:
 
 @dp.message()
 async def handle_message(msg: types.Message):
+    raw_text = msg.text or msg.caption or ""
+
+    print(
+        "FROM:",
+        msg.from_user.username,
+        "IS_BOT:",
+        msg.from_user.is_bot,
+        "TEXT:",
+        msg.text,
+        "ENTITIES:",
+        msg.entities,
+    )
+
+    print(
+        "TYPE:",
+        "text" if msg.text else
+        "caption" if msg.caption else
+        "media_only"
+    )
+
     chat_id = msg.chat.id
-    text = msg.text or ""
+    text = raw_text.strip()
     me = await bot.get_me()
     mentioned = False
 
