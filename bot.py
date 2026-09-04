@@ -120,7 +120,10 @@ async def generate_reply(chat_id: int, user_msg: str) -> str:
     except Exception as e:
         return f"Леша опять намудрил: {str(e)}"
 
-bot_names = ["Стасян", "Стасяна", "Стасяну", "Стасяне", "Стасяном", "Стасяне"]
+BOT_NAME_RE = re.compile(
+    r"(?<!\w)(?:стас\s*п|стасян(?:а|у|ом|е)?|сасян(?:а|у|ом|е)?|стас(?:а|у|ом|е)?)(?!\w)",
+    re.IGNORECASE,
+)
 PRAISES = [
     "О, брат, молодец 👍", "Так держать, красавчик 💪", "Красиво получилось 😎",
     "Вот это уровень 👏", "Брат, огонь 🔥", "Ты прям на стиле 😏",
@@ -152,9 +155,6 @@ async def add_to_group(msg: types.Message):
         "Добавить меня в группу может её администратор по ссылке:\n"
         f"https://t.me/{me.username}?startgroup=true"
     )
-
-def _clean_text_for_name_check(text: str) -> str:
-    return re.sub(r"[^\w\s]", "", text.lower())
 
 @dp.message()
 async def handle_message(msg: types.Message):
@@ -201,14 +201,12 @@ async def handle_message(msg: types.Message):
                         mentioned = True
                         break
 
-        # check name tokens
+        # Check common forms of the owner's name.
         if not mentioned:
-            clean = _clean_text_for_name_check(text)
-            for name in bot_names:
-                if name.lower() in clean.split():
-                    text = re.sub(re.escape(name), "", text, flags=re.IGNORECASE).strip()
-                    mentioned = True
-                    break
+            name_mention = BOT_NAME_RE.search(text)
+            if name_mention:
+                text = (text[:name_mention.start()] + text[name_mention.end():]).strip()
+                mentioned = True
 
         # check reply to bot
         if not mentioned and msg.reply_to_message:

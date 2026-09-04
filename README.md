@@ -31,7 +31,7 @@ docker-compose up --build
 ```
 
 ### Option 3: Local Python Development
-Traditional setup for development:
+Standard development setup:
 
 ```bash
 python -m venv .venv
@@ -40,7 +40,7 @@ pip install -r requirements.txt
 python bot.py
 ```
 
-## Files Structure
+## Project Structure
 - `bot.py` — main bot implementation
 - `persona.txt` — persona text used to emulate your style
 - `.env` — environment variables
@@ -70,7 +70,7 @@ Create an application at [my.telegram.org](https://my.telegram.org), then add it
 TELEGRAM_API_ID=123456
 TELEGRAM_API_HASH=your_api_hash
 USERBOT_SESSION=.userbot
-GROUP_REPLY_CHANCE=0.10
+GROUP_REPLY_CHANCE=0.01
 ```
 
 Install dependencies and start it locally:
@@ -93,7 +93,7 @@ To toggle replies for one chat, send one of these messages from your account in 
 The command is deleted after it is handled and a confirmation is sent to Saved Messages. Auto-reply is stored per chat, including groups, so enable it only where automatic replies are appropriate.
 Do not enable this mode in a private chat where the regular bot is also active, otherwise both accounts can reply to the same message.
 
-In a private chat, auto-reply responds to every eligible text message. In groups it responds only to a random share of eligible messages; use `GROUP_REPLY_CHANCE` to set that share from `0` to `1` (for example, `0.05` means about 5%).
+In a private chat, auto-reply responds to every eligible text message. In groups it responds only to a random share of eligible messages; use `GROUP_REPLY_CHANCE` to set that share from `0` to `1` (for example, `0.05` means about 5%). Mentions of your Telegram username or the supported name variants (`Стас`, `Стасян`, `Сасян`, `СтасП`, and `Стас П`) always receive a reply.
 
 ## Requirements
 - **For Docker:** Docker and Docker Compose

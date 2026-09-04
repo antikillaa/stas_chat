@@ -21,6 +21,11 @@ SESSION_NAME = os.getenv("USERBOT_SESSION", ".userbot")
 STATE_FILE = Path(os.getenv("USERBOT_STATE_FILE", "userbot-state.json"))
 MAX_HISTORY = 20
 GROUP_REPLY_CHANCE = float(os.getenv("GROUP_REPLY_CHANCE", "0.01"))
+OWNER_NAME_RE = re.compile(
+    r"(?<!\w)(?:стас\s*п|стасян(?:а|у|ом|е)?|сасян(?:а|у|ом|е)?|стас(?:а|у|ом|е)?|stas)(?!\w)",
+    re.IGNORECASE,
+)
+owner_username = ""
 
 if not API_ID or not API_HASH:
     raise RuntimeError("TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in .env")
@@ -62,6 +67,24 @@ def update_history(chat_id: int, role: str, text: str) -> None:
     history[chat_id] = messages[-MAX_HISTORY:]
 
 
+def normalized_history(chat_id: int) -> list[dict[str, str]]:
+    """Return a prompt history that starts with a user message and alternates roles."""
+    normalized: list[dict[str, str]] = []
+    expected_role = "user"
+    for message in history.get(chat_id, []):
+        if message["role"] != expected_role:
+            continue
+        normalized.append(message)
+        expected_role = "assistant" if expected_role == "user" else "user"
+    return normalized
+
+
+def is_owner_mentioned(text: str) -> bool:
+    if OWNER_NAME_RE.search(text):
+        return True
+    return bool(owner_username and f"@{owner_username}" in text.lower())
+
+
 def create_reply(chat_id: int) -> str:
     system_prompt = (
         "Ты — это я. Отвечай от моего имени, в моём стиле. "
@@ -69,7 +92,7 @@ def create_reply(chat_id: int) -> str:
         f"Мой стиль:\n{PERSONA}"
     )
     messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history.get(chat_id, []))
+    messages.extend(normalized_history(chat_id))
     response = llm.chat.completions.create(model=AI_MODEL, messages=messages)
     reply = response.choices[0].message.content or ""
     return re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip()
@@ -128,8 +151,8 @@ async def respond_as_owner(event: events.NewMessage.Event) -> None:
     if getattr(sender, "bot", False):
         return
 
-    # Personal chats always receive replies; group chats reply only occasionally.
-    if event.is_group and random.random() >= GROUP_REPLY_CHANCE:
+    # A direct mention always gets a reply; other group messages reply occasionally.
+    if event.is_group and not is_owner_mentioned(text) and random.random() >= GROUP_REPLY_CHANCE:
         return
 
     update_history(chat_id, "user", text)
@@ -145,7 +168,10 @@ async def respond_as_owner(event: events.NewMessage.Event) -> None:
 
 
 async def main() -> None:
+    global owner_username
     await telegram.start()
+    owner = await telegram.get_me()
+    owner_username = (owner.username or "").lower()
     print("Userbot started. Use /autorespond on or /autorespond off in a chat.")
     await telegram.run_until_disconnected()
 
