@@ -148,6 +148,18 @@ INIT_COOLDOWN = 60 * 15
 # =====================
 # HANDLER
 # =====================
+@dp.message(Command("addtogroup"))
+async def add_to_group(msg: types.Message):
+    """Send Telegram's official link for adding this bot to a group."""
+    me = await bot.get_me()
+    if not me.username:
+        await msg.answer("Не удалось создать ссылку: у бота нет username.")
+        return
+    await msg.answer(
+        "Добавить меня в группу может её администратор по ссылке:\n"
+        f"https://t.me/{me.username}?startgroup=true"
+    )
+
 @dp.message()
 async def handle_message(msg: types.Message):
     print(
