@@ -6,9 +6,15 @@ This file follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) f
 
 ### Changed
 
+- Replaced the joke-style persona with a personal, practical communication profile based on the account owner's work, interests, and preferred communication style.
 - In group chats, the userbot now replies to a random share of messages. Configure the share with `GROUP_REPLY_CHANCE` (1% by default).
 - Direct mentions of the account by username or supported name variants now always receive a reply in group chats.
 - The userbot now normalizes stored conversation history before sending it to the language model, preventing invalid role-order errors from strict prompt templates.
+
+### Added
+
+- Per-chat `/tone` controls for both the standard bot and the userbot: `natural`, `calm`, `warm`, `professional`, `concise`, and `playful`.
+- Per-chat persona selection with `/persona classic` and `/persona personal`; tone settings work independently with either persona.
 
 ## [2026-09-04] — Account-based auto-reply
 

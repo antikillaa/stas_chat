@@ -11,12 +11,24 @@ from aiogram.filters import Command
 from openai import OpenAI
 from PIL import Image
 import requests
-
-AI_MODEL = os.getenv("AI_MODEL", "google/gemma-3-12b")
-MAX_HISTORY = 20
-BASE_CHANCE = 0.1
+from personas import PERSONA_FILES, available_personas, load_persona
 
 load_dotenv()
+
+AI_MODEL = os.getenv("AI_MODEL", "google/gemma-4-26b-a4b")
+MAX_HISTORY = 20
+BASE_CHANCE = 0.1
+DEFAULT_TONE = "natural"
+DEFAULT_PERSONA = "personal"
+TONE_PROMPTS = {
+    "natural": "Говори естественно, прямо и доброжелательно.",
+    "calm": "Говори спокойно, взвешенно и поддерживающе.",
+    "warm": "Говори тепло, по-человечески и с лёгкой эмпатией.",
+    "professional": "Говори профессионально, структурированно и без лишней неформальности.",
+    "concise": "Отвечай максимально коротко и по существу.",
+    "playful": "Допускай лёгкий уместный юмор, но оставайся уважительным.",
+}
+
 TG_TOKEN = os.getenv("TG_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
 if not TG_TOKEN:
@@ -30,13 +42,10 @@ dp = Dispatcher()
 LM_STUDIO_URL = os.getenv("LM_STUDIO_URL", "http://127.0.0.1:1234/v1")
 client = OpenAI(base_url=LM_STUDIO_URL, api_key="lm-studio")
 
-with open("persona.txt", "r", encoding="utf-8") as f:
-    persona = f.read()
-
 chat_memory: dict[int, dict] = {}
 
 def update_history(chat_id: int, role: str, text: str):
-    mem = chat_memory.setdefault(chat_id, {"history": [], "mode": "stylish"})
+    mem = chat_memory.setdefault(chat_id, {"history": [], "mode": "stylish", "tone": DEFAULT_TONE, "persona": DEFAULT_PERSONA})
     
     # Проверяем последнюю роль, чтобы избежать дублирования
     if mem["history"] and mem["history"][-1]["role"] == role:
@@ -66,7 +75,7 @@ async def analyze_image(image_url: str, user_msg: str = "") -> str:
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": f"Опиши что на этом изображении в моем стиле: {persona[:200]}... {user_msg}"},
+                    {"type": "text", "text": f"Опиши изображение в моем стиле: {load_persona(DEFAULT_PERSONA)[:200]}... {user_msg}"},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_base64}"}}
                 ]
             }
@@ -84,7 +93,12 @@ async def analyze_image(image_url: str, user_msg: str = "") -> str:
 async def generate_reply(chat_id: int, user_msg: str) -> str:
     try:
         mode = chat_memory.get(chat_id, {}).get("mode", "stylish")
-        system_prompt = f"Ты — это я. Общайся в моем стиле.\nМой стиль:\n{persona}\n"
+        tone = chat_memory.get(chat_id, {}).get("tone", DEFAULT_TONE)
+        persona_name = chat_memory.get(chat_id, {}).get("persona", DEFAULT_PERSONA)
+        system_prompt = (
+            f"Ты — это я. Общайся в моем стиле.\n"
+            f"Текущий тон: {TONE_PROMPTS[tone]}\n\nМой стиль:\n{load_persona(persona_name)}\n"
+        )
         system_prompt += "Отвечай коротко, естественно и как я бы сказал." if mode == "stylish" \
                          else "Отвечай подробно, развернуто и объясняй все детали."
 
@@ -132,7 +146,7 @@ PRAISES = [
 
 @dp.message(Command("reset"))
 async def reset_chat(msg: types.Message):
-    chat_memory[msg.chat.id] = {"history": [], "mode": "stylish"}
+    chat_memory[msg.chat.id] = {"history": [], "mode": "stylish", "tone": DEFAULT_TONE, "persona": DEFAULT_PERSONA}
     await msg.answer("История чата очищена ✅, режим сброшен на 'stylish'.")
 
 @dp.message(Command("mode"))
@@ -141,8 +155,41 @@ async def change_mode(msg: types.Message):
     if len(parts) < 2 or parts[1] not in ("stylish", "detailed"):
         await msg.answer("Используй: /mode stylish или /mode detailed")
         return
-    chat_memory.setdefault(msg.chat.id, {"history": [], "mode": "stylish"})["mode"] = parts[1]
+    chat_memory.setdefault(msg.chat.id, {"history": [], "mode": "stylish", "tone": DEFAULT_TONE, "persona": DEFAULT_PERSONA})["mode"] = parts[1]
     await msg.answer(f"Режим изменен на '{parts[1]}' ✅")
+
+@dp.message(Command("tone"))
+async def change_tone(msg: types.Message):
+    parts = (msg.text or "").split()
+    available_tones = ", ".join(TONE_PROMPTS)
+    memory = chat_memory.setdefault(
+        msg.chat.id, {"history": [], "mode": "stylish", "tone": DEFAULT_TONE, "persona": DEFAULT_PERSONA}
+    )
+    if len(parts) < 2 or parts[1] == "status":
+        await msg.answer(f"Текущий тон: {memory.get('tone', DEFAULT_TONE)}. Доступно: {available_tones}")
+        return
+    tone = parts[1].lower()
+    if tone not in TONE_PROMPTS:
+        await msg.answer(f"Используй: /tone {available_tones} или /tone status")
+        return
+    memory["tone"] = tone
+    await msg.answer(f"Тон изменен на '{tone}' ✅")
+
+@dp.message(Command("persona"))
+async def change_persona(msg: types.Message):
+    parts = (msg.text or "").split()
+    memory = chat_memory.setdefault(
+        msg.chat.id, {"history": [], "mode": "stylish", "tone": DEFAULT_TONE, "persona": DEFAULT_PERSONA}
+    )
+    if len(parts) < 2 or parts[1] == "status":
+        await msg.answer(f"Текущая персона: {memory.get('persona', DEFAULT_PERSONA)}. Доступно: {available_personas()}")
+        return
+    persona_name = parts[1].lower()
+    if persona_name not in PERSONA_FILES:
+        await msg.answer(f"Используй: /persona {available_personas()} или /persona status")
+        return
+    memory["persona"] = persona_name
+    await msg.answer(f"Персона изменена на '{persona_name}' ✅")
 
 @dp.message(Command("addtogroup"))
 async def add_to_group(msg: types.Message):
@@ -256,7 +303,7 @@ async def handle_message(msg: types.Message):
         await msg.answer("Наверное Леша опять ерунду написал 🙄")
 
 async def main():
-    print("Bot started (polling). LM Studio must be running on port 1234.")
+    print(f"Bot started (polling) with model: {AI_MODEL}")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 from telethon import TelegramClient, events
+from personas import PERSONA_FILES, load_persona
 
 
 load_dotenv()
@@ -16,44 +17,69 @@ load_dotenv()
 API_ID = os.getenv("TELEGRAM_API_ID")
 API_HASH = os.getenv("TELEGRAM_API_HASH")
 LM_STUDIO_URL = os.getenv("LM_STUDIO_URL", "http://127.0.0.1:1234/v1")
-AI_MODEL = os.getenv("AI_MODEL", "google/gemma-3-12b")
+AI_MODEL = os.getenv("AI_MODEL")
 SESSION_NAME = os.getenv("USERBOT_SESSION", ".userbot")
 STATE_FILE = Path(os.getenv("USERBOT_STATE_FILE", "userbot-state.json"))
-MAX_HISTORY = 20
+MAX_HISTORY = 100
 GROUP_REPLY_CHANCE = float(os.getenv("GROUP_REPLY_CHANCE", "0.01"))
 OWNER_NAME_RE = re.compile(
     r"(?<!\w)(?:стас\s*п|стасян(?:а|у|ом|е)?|сасян(?:а|у|ом|е)?|стас(?:а|у|ом|е)?|stas)(?!\w)",
     re.IGNORECASE,
 )
 owner_username = ""
+DEFAULT_TONE = "natural"
+DEFAULT_PERSONA = "personal"
+TONE_PROMPTS = {
+    "natural": "Говори естественно, прямо и доброжелательно.",
+    "calm": "Говори спокойно, взвешенно и поддерживающе.",
+    "warm": "Говори тепло, по-человечески и с лёгкой эмпатией.",
+    "professional": "Говори профессионально, структурированно и без лишней неформальности.",
+    "concise": "Отвечай максимально коротко и по существу.",
+    "playful": "Допускай лёгкий уместный юмор, но оставайся уважительным.",
+}
 
 if not API_ID or not API_HASH:
     raise RuntimeError("TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in .env")
 if not 0 <= GROUP_REPLY_CHANCE <= 1:
     raise RuntimeError("GROUP_REPLY_CHANCE must be a number between 0 and 1")
 
-with Path(__file__).with_name("persona.txt").open(encoding="utf-8") as file:
-    PERSONA = file.read()
-
 telegram = TelegramClient(SESSION_NAME, int(API_ID), API_HASH)
 llm = OpenAI(base_url=LM_STUDIO_URL, api_key="lm-studio")
 history: dict[int, list[dict[str, str]]] = {}
 
 
-def load_active_chats() -> set[int]:
+def load_state() -> tuple[set[int], dict[int, str], dict[int, str]]:
     try:
         data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        return {int(chat_id) for chat_id in data.get("active_chat_ids", [])}
+        active_chats = {int(chat_id) for chat_id in data.get("active_chat_ids", [])}
+        tones = {
+            int(chat_id): tone
+            for chat_id, tone in data.get("chat_tones", {}).items()
+            if tone in TONE_PROMPTS
+        }
+        personas = {
+            int(chat_id): persona
+            for chat_id, persona in data.get("chat_personas", {}).items()
+            if persona in PERSONA_FILES
+        }
+        return active_chats, tones, personas
     except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
-        return set()
+        return set(), {}, {}
 
 
-active_chat_ids = load_active_chats()
+active_chat_ids, chat_tones, chat_personas = load_state()
 
 
 def save_active_chats() -> None:
     STATE_FILE.write_text(
-        json.dumps({"active_chat_ids": sorted(active_chat_ids)}, ensure_ascii=False),
+        json.dumps(
+            {
+                "active_chat_ids": sorted(active_chat_ids),
+                "chat_tones": {str(chat_id): tone for chat_id, tone in chat_tones.items()},
+                "chat_personas": {str(chat_id): persona for chat_id, persona in chat_personas.items()},
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
 
@@ -86,10 +112,13 @@ def is_owner_mentioned(text: str) -> bool:
 
 
 def create_reply(chat_id: int) -> str:
+    tone = chat_tones.get(chat_id, DEFAULT_TONE)
+    persona_name = chat_personas.get(chat_id, DEFAULT_PERSONA)
     system_prompt = (
         "Ты — это я. Отвечай от моего имени, в моём стиле. "
         "Не говори, что ты бот или автоответчик. Ответ короткий и естественный.\n\n"
-        f"Мой стиль:\n{PERSONA}"
+        f"Текущий тон: {TONE_PROMPTS[tone]}\n\n"
+        f"Моя персона:\n{load_persona(persona_name)}"
     )
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(normalized_history(chat_id))
@@ -99,6 +128,15 @@ def create_reply(chat_id: int) -> str:
 
 
 COMMAND_RE = re.compile(r"^/autorespond(?:@\w+)?\s+(on|off|status)\s*$", re.IGNORECASE)
+TONE_COMMAND_RE = re.compile(
+    r"^/tone(?:@\w+)?\s+(natural|calm|warm|professional|concise|playful|status)\s*$",
+    re.IGNORECASE,
+)
+PERSONA_COMMAND_RE = re.compile(r"^/persona(?:@\w+)?\s+(classic|personal|status)\s*$", re.IGNORECASE)
+
+
+def is_control_command(text: str) -> bool:
+    return bool(COMMAND_RE.match(text) or TONE_COMMAND_RE.match(text) or PERSONA_COMMAND_RE.match(text))
 
 
 @telegram.on(events.NewMessage(outgoing=True))
@@ -131,12 +169,49 @@ async def control_autorespond(event: events.NewMessage.Event) -> None:
 
 
 @telegram.on(events.NewMessage(outgoing=True))
+async def control_tone(event: events.NewMessage.Event) -> None:
+    """Set the reply tone for the chat where the owner sends the command."""
+    text = (event.raw_text or "").strip()
+    match = TONE_COMMAND_RE.match(text)
+    if not match or event.chat_id is None:
+        return
+
+    tone = match.group(1).lower()
+    if tone == "status":
+        result = f"Current tone: {chat_tones.get(event.chat_id, DEFAULT_TONE)}"
+    else:
+        chat_tones[event.chat_id] = tone
+        save_active_chats()
+        result = f"Tone set to: {tone}"
+
+    await event.delete()
+    await telegram.send_message("me", f"{result} for chat {event.chat_id}.")
+
+
+@telegram.on(events.NewMessage(outgoing=True))
+async def control_persona(event: events.NewMessage.Event) -> None:
+    text = (event.raw_text or "").strip()
+    match = PERSONA_COMMAND_RE.match(text)
+    if not match or event.chat_id is None:
+        return
+    persona = match.group(1).lower()
+    if persona == "status":
+        result = f"Current persona: {chat_personas.get(event.chat_id, DEFAULT_PERSONA)}"
+    else:
+        chat_personas[event.chat_id] = persona
+        save_active_chats()
+        result = f"Persona set to: {persona}"
+    await event.delete()
+    await telegram.send_message("me", f"{result} for chat {event.chat_id}.")
+
+
+@telegram.on(events.NewMessage(outgoing=True))
 async def remember_owner_messages(event: events.NewMessage.Event) -> None:
     """Keep genuine outgoing messages as conversation context."""
     if event.chat_id not in active_chat_ids:
         return
     text = (event.raw_text or "").strip()
-    if text and not COMMAND_RE.match(text):
+    if text and not is_control_command(text):
         update_history(event.chat_id, "assistant", text)
 
 
@@ -172,7 +247,7 @@ async def main() -> None:
     await telegram.start()
     owner = await telegram.get_me()
     owner_username = (owner.username or "").lower()
-    print("Userbot started. Use /autorespond on or /autorespond off in a chat.")
+    print(f"Userbot started with model: {AI_MODEL}. Use /autorespond on or /autorespond off in a chat.")
     await telegram.run_until_disconnected()
 
 

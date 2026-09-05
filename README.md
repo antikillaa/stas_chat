@@ -7,7 +7,7 @@ A Telegram bot that replies in the user's style using a local LM. The bot loads 
 - Conversation history (limited to 20 messages by default)
 - Two reply modes: `stylish` (short) and `detailed` (long)
 - Simple media praise logic
-- Commands: `/reset`, `/mode`, and `/addtogroup` for chat control
+- Commands: `/reset`, `/mode`, `/persona`, `/tone`, and `/addtogroup` for chat control
 - Docker support with two deployment options
 
 ## Quick Start Options
@@ -90,10 +90,32 @@ To toggle replies for one chat, send one of these messages from your account in 
 /autorespond status
 ```
 
+Set the reply tone for that chat with:
+
+```text
+/tone natural
+/tone calm
+/tone warm
+/tone professional
+/tone concise
+/tone playful
+/tone status
+```
+
+Choose the persona for that chat with:
+
+```text
+/persona classic
+/persona personal
+/persona status
+```
+
 The command is deleted after it is handled and a confirmation is sent to Saved Messages. Auto-reply is stored per chat, including groups, so enable it only where automatic replies are appropriate.
 Do not enable this mode in a private chat where the regular bot is also active, otherwise both accounts can reply to the same message.
 
 In a private chat, auto-reply responds to every eligible text message. In groups it responds only to a random share of eligible messages; use `GROUP_REPLY_CHANCE` to set that share from `0` to `1` (for example, `0.05` means about 5%). Mentions of your Telegram username or the supported name variants (`Стас`, `Стасян`, `Сасян`, `СтасП`, and `Стас П`) always receive a reply.
+
+The standard bot supports the same `/tone` and `/persona` values, stored in memory for the current chat until the bot restarts.
 
 ## Requirements
 - **For Docker:** Docker and Docker Compose

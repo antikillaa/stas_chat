@@ -16,7 +16,7 @@ load_dotenv()
 
 TG_TOKEN = os.getenv("TG_TOKEN_ANN")
 LM_STUDIO_URL = os.getenv("LM_STUDIO_URL", "http://127.0.0.1:1234/v1")
-AI_MODEL = os.getenv("AI_MODEL", "llama2")
+AI_MODEL = os.getenv("AI_MODEL")
 
 if not TG_TOKEN:
     raise RuntimeError("TG_TOKEN_ANN not found")
@@ -243,7 +243,7 @@ async def handle_message(msg: types.Message):
 # START
 # =====================
 async def main():
-    print("Анечка запущена 😈")
+    print(f"Anechka started with model: {AI_MODEL}")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
