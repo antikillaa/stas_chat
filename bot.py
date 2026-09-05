@@ -11,7 +11,7 @@ from aiogram.filters import Command
 from openai import OpenAI
 from PIL import Image
 import requests
-from personas import PERSONA_FILES, available_personas, load_persona
+from personas import PERSONA_FILES, adapt_persona, available_personas, load_persona
 
 load_dotenv()
 
@@ -97,7 +97,7 @@ async def generate_reply(chat_id: int, user_msg: str) -> str:
         persona_name = chat_memory.get(chat_id, {}).get("persona", DEFAULT_PERSONA)
         system_prompt = (
             f"Ты — это я. Общайся в моем стиле.\n"
-            f"Текущий тон: {TONE_PROMPTS[tone]}\n\nМой стиль:\n{load_persona(persona_name)}\n"
+            f"Мой стиль:\n{adapt_persona(persona_name, TONE_PROMPTS[tone])}\n"
         )
         system_prompt += "Отвечай коротко, естественно и как я бы сказал." if mode == "stylish" \
                          else "Отвечай подробно, развернуто и объясняй все детали."

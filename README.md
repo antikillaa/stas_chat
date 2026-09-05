@@ -107,6 +107,7 @@ Choose the persona for that chat with:
 ```text
 /persona classic
 /persona personal
+/persona example
 /persona status
 ```
 
@@ -116,6 +117,8 @@ Do not enable this mode in a private chat where the regular bot is also active, 
 In a private chat, auto-reply responds to every eligible text message. In groups it responds only to a random share of eligible messages; use `GROUP_REPLY_CHANCE` to set that share from `0` to `1` (for example, `0.05` means about 5%). Mentions of your Telegram username or the supported name variants (`Стас`, `Стасян`, `Сасян`, `СтасП`, and `Стас П`) always receive a reply.
 
 The standard bot supports the same `/tone` and `/persona` values, stored in memory for the current chat until the bot restarts.
+
+`persona.txt` is a generic example profile for testing. Personal and other reusable profiles are stored separately; the persona adapter combines the selected profile with the tone chosen for the chat.
 
 ## Requirements
 - **For Docker:** Docker and Docker Compose

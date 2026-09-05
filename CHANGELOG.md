@@ -15,6 +15,7 @@ This file follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) f
 
 - Per-chat `/tone` controls for both the standard bot and the userbot: `natural`, `calm`, `warm`, `professional`, `concise`, and `playful`.
 - Per-chat persona selection with `/persona classic` and `/persona personal`; tone settings work independently with either persona.
+- An `example` persona and a persona adapter that applies the selected chat tone to every persona profile.
 
 ## [2026-09-04] — Account-based auto-reply
 

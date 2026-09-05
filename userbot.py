@@ -9,7 +9,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 from telethon import TelegramClient, events
-from personas import PERSONA_FILES, load_persona
+from personas import PERSONA_FILES, adapt_persona
 
 
 load_dotenv()
@@ -117,8 +117,7 @@ def create_reply(chat_id: int) -> str:
     system_prompt = (
         "Ты — это я. Отвечай от моего имени, в моём стиле. "
         "Не говори, что ты бот или автоответчик. Ответ короткий и естественный.\n\n"
-        f"Текущий тон: {TONE_PROMPTS[tone]}\n\n"
-        f"Моя персона:\n{load_persona(persona_name)}"
+        f"Моя персона:\n{adapt_persona(persona_name, TONE_PROMPTS[tone])}"
     )
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(normalized_history(chat_id))
@@ -132,7 +131,7 @@ TONE_COMMAND_RE = re.compile(
     r"^/tone(?:@\w+)?\s+(natural|calm|warm|professional|concise|playful|status)\s*$",
     re.IGNORECASE,
 )
-PERSONA_COMMAND_RE = re.compile(r"^/persona(?:@\w+)?\s+(classic|personal|status)\s*$", re.IGNORECASE)
+PERSONA_COMMAND_RE = re.compile(r"^/persona(?:@\w+)?\s+(example|classic|personal|status)\s*$", re.IGNORECASE)
 
 
 def is_control_command(text: str) -> bool:
